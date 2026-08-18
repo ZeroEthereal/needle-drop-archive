@@ -1,0 +1,12 @@
+# Local development only. Copy this file to .dev.vars; never use the production key here.
+ALLOW_LOCAL_DEV=true
+ALLOWED_EMAIL=developer@example.invalid
+
+# These legacy values are needed only when testing an upgrade from an old private installation.
+# New installations select the account and playlist in the web interface.
+NETEASE_PLAYLIST_ID=replace-only-for-legacy-migration
+NETEASE_EXPECTED_UID=replace-only-for-legacy-migration
+
+ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
+ACCESS_AUD=replace-with-access-application-aud
+SESSION_ENCRYPTION_KEY=replace-with-base64-encoded-32-byte-key

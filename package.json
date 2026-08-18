@@ -1,0 +1,57 @@
+{
+  "name": "needle-drop-archive",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "vinext dev",
+    "build": "vinext build && node scripts/scrub-build-secrets.mjs",
+    "start": "vinext start",
+    "preview": "vite preview",
+    "test": "node --test tests/*.test.mjs tests/*.test.ts",
+    "test:render": "npm run build && node --test tests/rendered-html.test.mjs",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck && npm run lint && npm test && npm run test:netease && npm run build",
+    "db:migrate:local": "wrangler d1 migrations apply needle-drop-archive --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "test:netease": "node lib/netease/selftest.ts",
+    "smoke:public": "node lib/netease/public-smoke.ts",
+    "deploy": "node scripts/cloudflare-deploy.mjs --use-existing-build",
+    "deploy:full": "node scripts/cloudflare-deploy.mjs",
+    "deploy:dry-run": "node scripts/cloudflare-deploy.mjs --dry-run"
+  },
+  "dependencies": {
+    "hono": "^4.12.30",
+    "jose": "^6.2.3",
+    "next": "16.2.6",
+    "qrcode": "^1.5.4",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.45.0",
+    "@cloudflare/workers-types": "^5.20260719.1",
+    "@types/node": "22.19.19",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "react-server-dom-webpack": "19.2.6",
+    "typescript": "5.9.3",
+    "vinext": "0.0.50",
+    "vite": "^8.1.5",
+    "wrangler": "^4.112.0"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.10"
+    }
+  },
+  "type": "module"
+}

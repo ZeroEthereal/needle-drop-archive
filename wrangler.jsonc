@@ -1,0 +1,48 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "needle-drop-archive",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-07-16",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // This is a personal workers.dev service. Preview URLs are disabled so they
+  // cannot become an unprotected alternate route around Cloudflare Access.
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": true,
+
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "none"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "needle-drop-archive",
+      "migrations_dir": "drizzle"
+    }
+  ],
+
+  "workflows": [
+    {
+      "name": "needle-drop-archive-sync",
+      "binding": "MUSIC_SYNC",
+      "class_name": "MusicSyncWorkflow"
+    }
+  ],
+
+  // Cron Trigger is available on the Workers free plan. It starts the same
+  // durable Workflow used by the manual sync button. Cron expressions are UTC:
+  // 19:17 UTC = 03:17 Asia/Shanghai on the following calendar day.
+  "triggers": {
+    "crons": ["17 19 * * *"]
+  },
+
+  // Access identity values are configured after deployment in the Cloudflare
+  // dashboard, or in an ignored wrangler.private.jsonc for local deployment.
+  // keep_vars preserves dashboard values across Git-based deployments.
+  "vars": {
+    "ALLOW_LOCAL_DEV": "false"
+  }
+}
