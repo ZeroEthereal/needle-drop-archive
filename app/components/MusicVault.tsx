@@ -604,7 +604,7 @@ function VinylHero({ pending, unavailable }: { pending?: number; unavailable: bo
   const title = unavailable
     ? "把每一次喜欢，都留在时间里"
     : pending
-      ? `${pending} 首歌，等待重回你的耳机`
+      ? `${pending} 首旋律，等待重回你的耳机`
       : "你的歌单，正被好好守护";
   return (
     <section className="vinyl-hero">
@@ -703,9 +703,7 @@ function RecoveryView({
       <div className="recovery-explainer">
         <span className="explainer-icon">!</span>
         <p>
-          <span className="recovery-explainer-line"><strong>注意：</strong>找回变灰歌曲后，请先将歌曲上传至网易云云盘，并检查原灰色歌曲能否播放。</span>
-          <span className="recovery-explainer-line is-branch">若已恢复播放，无需点击“完成”，同步后系统会自动恢复正常；</span>
-          <span className="recovery-explainer-line is-branch">若仍无法播放，请取消收藏原灰色歌曲，重新收藏云盘中的歌曲，再回到这里点击“完成”。</span>
+          <span className="recovery-explainer-line"><strong>注意：</strong>找回变灰歌曲后，请先将歌曲上传至网易云云盘，然后取消收藏原灰色歌曲之后重新收藏云盘中的歌曲，再回到这里点击“完成”。</span>
         </p>
       </div>
       <div className="toolbar glass-panel">
