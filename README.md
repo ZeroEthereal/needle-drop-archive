@@ -17,6 +17,8 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors one Ne
 
 在浏览器中完成 GitHub 与 Cloudflare 授权后，Cloudflare 会复制仓库、创建 D1、构建并部署 Worker、Static Assets、Workflow 和 Cron。部署表单中务必勾选 **“创建专用 Git 存储库”**：Cloudflare 会把实例的 D1 binding ID 写入复制后的仓库配置，使用私有仓库可以避免把该实例标识公开。
 
+> **注意：** 如果一键部署提示“无法获取存储库内容”或无法继续，通常是因为 Cloudflare 部署页面读取公开 GitHub 仓库时使用了匿名请求，而当前网络或 VPN 节点的共享出口 IP 已被其他用户消耗完 GitHub 的匿名访问额度，并不代表项目代码有问题。请不要反复重试，建议改用下面的 **Agent 辅助部署**，让 Agent 自动完成部署和配置。
+
 按钮部署完成后，还需在 Cloudflare 控制台启用一次 Access，并填写 `ALLOWED_EMAIL`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD` 三个变量。保存变量后，如果控制台只创建了新版本而没有自动切换流量，请到 **Deployments / Versions** 将该版本“提升”到 100% 流量。未完成这些步骤时网站保持锁定，不会显示个人数据。
 
 ### 2. 下载项目后让通用 Agent 辅助部署（Windows）
