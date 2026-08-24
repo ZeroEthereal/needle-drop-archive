@@ -1035,7 +1035,7 @@ function SyncView({
                 );
               })}
             </div>
-            {status.error ? <div className="sync-error"><strong>同步没有完成</strong><p>{status.error}</p></div> : null}
+            {status.error ? <div className="sync-error"><strong>{status.state === "reauth_required" ? "需要重新授权网易云" : "同步没有完成"}</strong><p>{status.error}</p></div> : null}
           </section>
 
           <section className="sync-metrics">
@@ -1368,7 +1368,7 @@ export function MusicVault() {
   useEffect(() => {
     const bindingActive = status?.binding?.state === "preparing" || status?.binding?.state === "running";
     if (status?.state !== "running" && status?.state !== "queued" && !bindingActive) return;
-    const timer = window.setInterval(() => void loadStatus(false), 2600);
+    const timer = window.setInterval(() => void loadStatus(false), 800);
     return () => window.clearInterval(timer);
   }, [loadStatus, status?.binding?.state, status?.state]);
 

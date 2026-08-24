@@ -141,6 +141,8 @@ export interface AccountSnapshotOptions {
   expectedUserId?: string;
   /** Defaults to true. Unexplained membership gaps abort rather than creating false loss events. */
   strictCompleteness?: boolean;
+  /** Called after complete playlist membership has been read, before song inspection begins. */
+  onPlaylistRead?: () => Promise<void> | void;
 }
 
 export interface NeteaseClientOptions {

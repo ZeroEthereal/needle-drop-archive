@@ -757,6 +757,7 @@ export class NeteaseClient {
       );
     }
 
+    await options.onPlaylistRead?.();
     const detailBatch = await this.getSongDetails(trackIds, session);
     const cloudSongs = await this.getCloudSongDetails(detailBatch.missingIds, session);
     const availability = await this.getPlaybackAvailability(trackIds, session);

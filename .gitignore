@@ -45,3 +45,4 @@ next-env.d.ts
 /.dev.vars
 /.dev.vars.deploy-hidden
 /wrangler.private.jsonc
+/AGENTS.md

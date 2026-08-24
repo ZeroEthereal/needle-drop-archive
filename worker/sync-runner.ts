@@ -57,6 +57,17 @@ function errorInfo(error: unknown): {
   phase: string;
   reauthRequired: boolean;
 } {
+  // AES-GCM authentication failures mean the persisted login session cannot be
+  // recovered with the configured server key. The safe recovery path is the
+  // same as an expired NetEase session: obtain a new session via QR login.
+  if (error instanceof Error && /decryption failed|ciphertext authentication failure/i.test(error.message)) {
+    return {
+      code: "NETEASE_SESSION_UNAVAILABLE",
+      message: "网易云登录信息已失效，请重新扫码授权网易云登录后再同步。",
+      phase: "validate_session",
+      reauthRequired: true,
+    };
+  }
   if (error instanceof NeteaseError) {
     const reauthRequired = error.kind === "authentication" ||
       error.kind === "anonymous" ||
@@ -123,20 +134,22 @@ export async function runMusicSync(env: Env, trigger: SyncTrigger): Promise<Musi
     );
     if (!sessionStillCurrent) throw new BindingChangedError();
 
-    await updateSyncRunPhase(env.DB, runId, "fetch_snapshot");
+    await updateSyncRunPhase(env.DB, runId, "fetch_playlist");
     const state = await loadSyncState(env.DB);
     const account = await client.getAccountSnapshot(stored.session, {
       playlistId: config.playlistId,
       expectedUserId: config.accountUid,
       strictCompleteness: true,
+      onPlaylistRead: () => updateSyncRunPhase(env.DB, runId, "inspect_songs"),
     });
+    await updateSyncRunPhase(env.DB, runId, "compare_snapshot");
     const verifiedAccount = await verifySnapshotAnomalies(
       client,
       stored.session,
       account,
       state,
     );
-    await updateSyncRunPhase(env.DB, runId, "compare_and_commit");
+    await updateSyncRunPhase(env.DB, runId, "persist_snapshot");
     const { plan } = await runSnapshotSync(env.DB, snapshotForStateMachine(verifiedAccount), {
       trigger,
       runId,
