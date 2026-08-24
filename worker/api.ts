@@ -155,7 +155,6 @@ async function latestSyncRun(env: Env): Promise<LatestSyncRun | null> {
 }
 
 function queueIsPending(queue: ManualSyncQueue | null, latest: LatestSyncRun | null, now = Date.now()): boolean {
-  if (latest?.status === "running") return true;
   if (!queue) return false;
   const requestedAt = Date.parse(queue.requestedAt);
   if (!Number.isFinite(requestedAt) || now - requestedAt > MANUAL_SYNC_PENDING_MS) return false;
@@ -310,7 +309,7 @@ app.post("/api/sync", async (context) => {
     safeSetting<ManualSyncQueue>(context.env, "manual_sync_queue"),
     latestSyncRun(context.env),
   ]);
-  if (queueIsPending(queue, latest)) {
+  if (latest?.status === "running" || queueIsPending(queue, latest)) {
     return context.json({ state: "queued", workflowId: queue?.id }, 202);
   }
 
