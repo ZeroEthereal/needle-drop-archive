@@ -1864,6 +1864,31 @@ input:focus-visible {
   margin: 0;
 }
 
+.rebind-confirm-modal {
+  width: min(480px,100%);
+}
+
+.rebind-confirm-modal h2 {
+  margin: 9px 38px 10px 0;
+  font-size: 28px;
+}
+
+.rebind-confirm-warning {
+  margin: 0;
+  color: #ffd2f7;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.rebind-confirm-actions {
+  justify-content: flex-end;
+}
+
+.rebind-confirm-actions .quiet-button {
+  min-height: 46px;
+  padding: 0 19px;
+}
+
 .playlist-choice-list {
   display: grid;
   gap: 10px;

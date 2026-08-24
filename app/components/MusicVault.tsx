@@ -1177,6 +1177,29 @@ function PlaylistModal({
   );
 }
 
+function RebindConfirmModal({
+  onClose,
+  onConfirm,
+}: {
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="modal-card rebind-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="rebind-confirm-title" aria-describedby="rebind-confirm-description">
+        <button type="button" className="modal-close" onClick={onClose} aria-label="关闭">×</button>
+        <p className="micro-label">PLAYLIST REBIND</p>
+        <h2 id="rebind-confirm-title">确认重绑歌单？</h2>
+        <p id="rebind-confirm-description" className="rebind-confirm-warning">新歌单建立完成后，当前歌单的活动历史将被清除，且无法恢复。</p>
+        <div className="modal-actions rebind-confirm-actions">
+          <button type="button" className="quiet-button" onClick={onClose}>取消</button>
+          <button type="button" className="primary-button" onClick={onConfirm}>确认重绑</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function MusicVault() {
   const [view, setView] = useState<ViewId>("recovery");
   const [motion, setMotion] = useState<MotionMode>("immersive");
@@ -1201,6 +1224,7 @@ export function MusicVault() {
   const [qrOpen, setQrOpen] = useState(false);
   const [qrLogin, setQrLogin] = useState<QrLogin>();
   const [qrMode, setQrMode] = useState<"initial" | "reauthorize">("initial");
+  const [rebindConfirmOpen, setRebindConfirmOpen] = useState(false);
   const [playlistOpen, setPlaylistOpen] = useState(false);
   const [playlistLoading, setPlaylistLoading] = useState(false);
   const [playlistBinding, setPlaylistBinding] = useState(false);
@@ -1251,12 +1275,13 @@ export function MusicVault() {
   }, [toast]);
 
   useEffect(() => {
-    if (!qrOpen && !playlistOpen) return;
+    if (!qrOpen && !rebindConfirmOpen && !playlistOpen) return;
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setQrOpen(false);
+      setRebindConfirmOpen(false);
       setPlaylistOpen(false);
     };
     window.addEventListener("keydown", onKey);
@@ -1264,7 +1289,7 @@ export function MusicVault() {
       document.body.style.overflow = previous;
       window.removeEventListener("keydown", onKey);
     };
-  }, [playlistOpen, qrOpen]);
+  }, [playlistOpen, qrOpen, rebindConfirmOpen]);
 
   const loadRecovery = useCallback(async (cursor?: string, append = false) => {
     const sequence = append ? recoveryRequest.current : ++recoveryRequest.current;
@@ -1565,6 +1590,11 @@ export function MusicVault() {
     setPlaylistOpen(false);
   };
 
+  const confirmRebind = () => {
+    setRebindConfirmOpen(false);
+    void loadPlaylists();
+  };
+
   useEffect(() => {
     if (!qrOpen || !qrLogin?.flowId || !["waiting_scan", "waiting_confirm"].includes(qrLogin.state)) return;
     let checking = false;
@@ -1598,10 +1628,6 @@ export function MusicVault() {
   }, [loadPlaylists, loadStatus, notify, qrLogin?.flowId, qrLogin?.state, qrOpen]);
 
   const bindPlaylist = async (playlist: PlaylistChoice) => {
-    const warning = playlist.owned
-      ? `确定改为监控“${playlist.name}”吗？新基线成功后，旧歌单的活动历史会被清除。`
-      : `“${playlist.name}”属于 ${playlist.ownerName}。对方修改也会被记录；新基线成功后旧历史会被清除。确定继续吗？`;
-    if (!window.confirm(warning)) return;
     setPlaylistBinding(true);
     try {
       await requestJson([{
@@ -1720,7 +1746,7 @@ export function MusicVault() {
               onSync={handleSync}
               onLogin={() => openQr("initial")}
               onReauthorize={() => openQr("reauthorize")}
-              onRebind={() => void loadPlaylists()}
+              onRebind={() => setRebindConfirmOpen(true)}
             />
           ) : null}
         </div>
@@ -1738,6 +1764,7 @@ export function MusicVault() {
       {qrOpen ? <QrModal login={qrLogin} onClose={closeQr} onRefresh={() => {
         void cancelFlow(qrLogin?.flowId).finally(() => createQr());
       }} /> : null}
+      {rebindConfirmOpen ? <RebindConfirmModal onClose={() => setRebindConfirmOpen(false)} onConfirm={confirmRebind} /> : null}
       {playlistOpen ? (
         <PlaylistModal
           playlists={playlistChoices}
