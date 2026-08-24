@@ -51,12 +51,13 @@ const BASELINE_SONGS_SQL = `
 
 const BASELINE_MANAGED_SQL = `
   INSERT INTO managed_songs (
-    song_id, bucket, anomaly_type, first_seen_at, last_seen_at,
+    song_id, bucket, anomaly_type, first_seen_at, last_seen_at, last_confirmed_at,
     last_playable_at, confirmed_at, created_at, updated_at
   )
   SELECT json_extract(value, '$.songId'), json_extract(value, '$.bucket'),
          json_extract(value, '$.anomalyType'),
          json_extract(value, '$.firstSeenAt'), json_extract(value, '$.lastSeenAt'),
+         json_extract(value, '$.lastConfirmedAt'),
          json_extract(value, '$.lastPlayableAt'), json_extract(value, '$.confirmedAt'),
          json_extract(value, '$.createdAt'), json_extract(value, '$.updatedAt')
   FROM json_each(?)

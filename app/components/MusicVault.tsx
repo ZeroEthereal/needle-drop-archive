@@ -143,6 +143,7 @@ function normalizeSong(value: unknown, forcedState?: SongState): SongRecord | nu
       `https://music.163.com/#/song?id=${encodeURIComponent(id)}`,
     firstSeenAt: firstString(value.firstSeenAt, value.createdAt),
     lastSeenAt: firstString(value.lastSeenAt, value.updatedAt),
+    lastConfirmedAt: firstString(value.lastConfirmedAt),
     state,
     source,
   };
@@ -160,7 +161,7 @@ function normalizeRecovery(value: unknown): RecoveryItem | null {
   return {
     kind,
     song,
-    lastNormalAt: firstString(value.lastNormalAt, value.lastSeenAt, song.lastSeenAt),
+    lastNormalAt: firstString(value.lastNormalAt),
     confirmedAt: firstString(value.confirmedAt, value.detectedAt, value.createdAt),
   };
 }
@@ -764,7 +765,7 @@ function RecoveryView({
               </div>
               <div><StatusBadge kind={item.kind} /></div>
               <time>{formatDateTime(item.lastNormalAt)}</time>
-              <time>{formatDateTime(item.confirmedAt)}</time>
+              <time>{formatDateTime(item.song.firstSeenAt)}</time>
               <div className="row-actions">
                 <button
                   type="button"
@@ -904,11 +905,11 @@ function LikesView({
         <section className={`likes-table view-${viewMode}`}>
           {viewMode === "list" ? (
             <div className="list-header likes-grid" aria-hidden="true">
-              <span>#</span><span>歌曲</span><span>专辑</span><span>状态</span><span>最近确认</span><span />
+              <span>歌曲</span><span>专辑</span><span>发现时间</span><span>最近确认</span><span>状态</span><span />
             </div>
           ) : null}
           <div className={viewMode === "grid" ? "likes-cover-grid" : "likes-list"} role="list">
-            {filtered.map((song, index) => viewMode === "grid" ? (
+            {filtered.map((song) => viewMode === "grid" ? (
               <article className={`like-cover-card ${song.state === "grey" ? "is-grey" : song.state === "missing" ? "is-missing" : ""}`} role="listitem" key={song.id}>
                 <a href={song.neteaseUrl} target="_blank" rel="noreferrer" aria-label={`在网易云打开 ${song.title}`}>
                   <SongCover song={song} size="large" />
@@ -921,14 +922,14 @@ function LikesView({
               </article>
             ) : (
               <article className="like-row likes-grid" role="listitem" key={song.id}>
-                <span className="track-index">{String(index + 1).padStart(2, "0")}</span>
                 <div className="song-cell">
                   <SongCover song={song} />
                   <div><h3>{song.title}</h3><p>{artistLine(song)}</p></div>
                 </div>
                 <p className="album-cell">{song.album}</p>
+                <time>{formatDateTime(song.firstSeenAt)}</time>
+                <time>{formatDateTime(song.lastConfirmedAt)}</time>
                 {song.state === "grey" ? <span className="library-state state-grey"><i />已变灰</span> : song.state === "missing" ? <span className="library-state state-missing"><i />已消失</span> : <span />}
-                <time>{formatDateTime(song.lastSeenAt)}</time>
                 {song.neteaseUrl ? (
                   <a className="song-open" href={song.neteaseUrl} target="_blank" rel="noreferrer" aria-label={`在网易云打开 ${song.title}`}>↗</a>
                 ) : <span />}

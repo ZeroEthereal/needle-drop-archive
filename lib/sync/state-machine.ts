@@ -25,6 +25,7 @@ export interface ManagedSongState {
   anomalyType: RecoveryType | null;
   firstSeenAt: string;
   lastSeenAt: string;
+  lastConfirmedAt?: string;
   lastPlayableAt: string | null;
   confirmedAt: string | null;
   createdAt: string;
@@ -185,7 +186,8 @@ export function planSnapshotSync(
         anomalyType: null,
         firstSeenAt: observedAt,
         lastSeenAt: observedAt,
-        lastPlayableAt: song.accountPlayable ? observedAt : null,
+        lastConfirmedAt: observedAt,
+        lastPlayableAt: song.accountPlayable || baselineEstablished ? observedAt : null,
         confirmedAt: null,
         createdAt: observedAt,
         updatedAt: observedAt,
@@ -203,6 +205,7 @@ export function planSnapshotSync(
     let next: ManagedSongState = {
       ...existing,
       lastSeenAt: observedAt,
+      lastConfirmedAt: observedAt,
       lastPlayableAt: song.accountPlayable ? observedAt : existing.lastPlayableAt,
       updatedAt: observedAt,
     };
@@ -223,7 +226,10 @@ export function planSnapshotSync(
 
   for (const existing of original.values()) {
     if (snapshotById.has(existing.songId) || existing.bucket === "anomaly") continue;
-    managed.set(existing.songId, confirmAnomaly(existing, "missing", observedAt));
+    managed.set(existing.songId, {
+      ...confirmAnomaly(existing, "missing", observedAt),
+      lastConfirmedAt: observedAt,
+    });
     newlyConfirmedSongIds.push(existing.songId);
     confirmedMissingCount += 1;
   }

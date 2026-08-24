@@ -15,6 +15,7 @@ export interface SongRecord {
   neteaseUrl?: string;
   firstSeenAt?: string;
   lastSeenAt?: string;
+  lastConfirmedAt?: string;
   state: SongState;
   source?: "catalog" | "cloud" | "unknown";
 }

@@ -27,6 +27,7 @@ interface ManagedSongDbRow {
   anomaly_type: "missing" | "grey" | null;
   first_seen_at: string;
   last_seen_at: string;
+  last_confirmed_at?: string | null;
   last_playable_at: string | null;
   confirmed_at: string | null;
   created_at: string;
@@ -38,10 +39,22 @@ function rows<T>(result: D1ResultPort<T>): T[] {
   return result.results ?? [];
 }
 
+const lastConfirmedColumnSupport = new WeakMap<D1DatabasePort, Promise<boolean>>();
+
+function hasLastConfirmedColumn(db: D1DatabasePort): Promise<boolean> {
+  const cached = lastConfirmedColumnSupport.get(db);
+  if (cached) return cached;
+  const detected = db.prepare("PRAGMA table_info(managed_songs)").all<{ name: string }>()
+    .then((result) => rows(result).some((column) => column.name === "last_confirmed_at"));
+  lastConfirmedColumnSupport.set(db, detected);
+  return detected;
+}
+
 export async function loadSyncState(db: D1DatabasePort): Promise<SyncState> {
+  const hasLastConfirmedAt = await hasLastConfirmedColumn(db);
   const result = await db.prepare(`
     SELECT song_id, bucket, anomaly_type, first_seen_at, last_seen_at,
-           last_playable_at, confirmed_at, created_at, updated_at
+           ${hasLastConfirmedAt ? "last_confirmed_at," : ""} last_playable_at, confirmed_at, created_at, updated_at
     FROM managed_songs
   `).all<ManagedSongDbRow>();
 
@@ -52,6 +65,7 @@ export async function loadSyncState(db: D1DatabasePort): Promise<SyncState> {
       anomalyType: row.anomaly_type,
       firstSeenAt: row.first_seen_at,
       lastSeenAt: row.last_seen_at,
+      lastConfirmedAt: row.last_confirmed_at ?? row.last_seen_at,
       lastPlayableAt: row.last_playable_at,
       confirmedAt: row.confirmed_at,
       createdAt: row.created_at,
@@ -86,7 +100,7 @@ const UPSERT_SONGS_SQL = `
 
 const UPSERT_MANAGED_SONGS_SQL = `
   INSERT INTO managed_songs (
-    song_id, bucket, anomaly_type, first_seen_at, last_seen_at,
+    song_id, bucket, anomaly_type, first_seen_at, last_seen_at, last_confirmed_at,
     last_playable_at, confirmed_at, created_at, updated_at
   )
   SELECT
@@ -95,6 +109,7 @@ const UPSERT_MANAGED_SONGS_SQL = `
     json_extract(value, '$.anomalyType'),
     json_extract(value, '$.firstSeenAt'),
     json_extract(value, '$.lastSeenAt'),
+    json_extract(value, '$.lastConfirmedAt'),
     json_extract(value, '$.lastPlayableAt'),
     json_extract(value, '$.confirmedAt'),
     json_extract(value, '$.createdAt'),
@@ -106,10 +121,16 @@ const UPSERT_MANAGED_SONGS_SQL = `
     anomaly_type = excluded.anomaly_type,
     first_seen_at = excluded.first_seen_at,
     last_seen_at = excluded.last_seen_at,
+    last_confirmed_at = excluded.last_confirmed_at,
     last_playable_at = excluded.last_playable_at,
     confirmed_at = excluded.confirmed_at,
     updated_at = excluded.updated_at
 `;
+
+const UPSERT_MANAGED_SONGS_SQL_LEGACY = UPSERT_MANAGED_SONGS_SQL
+  .replace(", last_confirmed_at", "")
+  .replace("    json_extract(value, '$.lastConfirmedAt'),\n", "")
+  .replace("    last_confirmed_at = excluded.last_confirmed_at,\n", "");
 
 export type SyncTrigger = "scheduled" | "manual";
 
@@ -189,6 +210,10 @@ export async function commitSyncPlan(
   plan: SyncPlan,
   options: CommitSyncOptions,
 ): Promise<void> {
+  const hasLastConfirmedAt = await hasLastConfirmedColumn(db);
+  const managedSongUpsertSql = hasLastConfirmedAt
+    ? UPSERT_MANAGED_SONGS_SQL
+    : UPSERT_MANAGED_SONGS_SQL_LEGACY;
   const statements: D1PreparedStatementPort[] = [
     db.prepare(UPSERT_SONGS_SQL.replace(
       "WHERE true",
@@ -197,7 +222,7 @@ export async function commitSyncPlan(
   ];
   if (plan.managedSongUpserts.length > 0) {
     statements.push(
-      db.prepare(UPSERT_MANAGED_SONGS_SQL.replace(
+      db.prepare(managedSongUpsertSql.replace(
         "WHERE true",
         "WHERE EXISTS (SELECT 1 FROM instance_config WHERE id = 'primary' AND binding_version = ? AND status = 'ready')",
       )).bind(JSON.stringify(plan.managedSongUpserts), options.bindingVersion),
@@ -351,6 +376,7 @@ export interface RecoveryListRow {
   neteaseUrl: string;
   firstSeenAt: string;
   lastSeenAt: string;
+  lastConfirmedAt: string;
   lastNormalAt: string | null;
   confirmedAt: string;
 }
@@ -365,6 +391,7 @@ interface RecoveryListDbRow {
   netease_url: string;
   first_seen_at: string;
   last_seen_at: string;
+  last_confirmed_at: string;
   last_normal_at: string | null;
   confirmed_at: string;
 }
@@ -373,6 +400,7 @@ export async function listOpenRecovery(
   db: D1DatabasePort,
   options: { type?: "missing" | "grey"; query?: string; offset?: number; limit?: number } = {},
 ): Promise<{ items: RecoveryListRow[]; nextOffset: number | null }> {
+  const hasLastConfirmedAt = await hasLastConfirmedColumn(db);
   const limit = Math.min(100, Math.max(1, options.limit ?? 40));
   const offset = Math.max(0, options.offset ?? 0);
   const query = `%${(options.query ?? "").trim()}%`;
@@ -380,7 +408,7 @@ export async function listOpenRecovery(
   const result = await db.prepare(`
     SELECT m.song_id, m.anomaly_type AS type, s.title, s.artists, s.album,
            s.cover_url, s.netease_url, m.first_seen_at, m.last_seen_at,
-           m.last_playable_at AS last_normal_at, m.confirmed_at
+           ${hasLastConfirmedAt ? "m.last_confirmed_at," : "m.last_seen_at AS last_confirmed_at,"} m.last_playable_at AS last_normal_at, m.confirmed_at
     FROM managed_songs m
     JOIN songs s ON s.id = m.song_id
     WHERE m.bucket = 'anomaly'
@@ -402,6 +430,7 @@ export async function listOpenRecovery(
       neteaseUrl: row.netease_url,
       firstSeenAt: row.first_seen_at,
       lastSeenAt: row.last_seen_at,
+      lastConfirmedAt: row.last_confirmed_at,
       lastNormalAt: row.last_normal_at,
       confirmedAt: row.confirmed_at,
     })),
@@ -418,6 +447,7 @@ export interface LikeListRow {
   neteaseUrl: string;
   firstSeenAt: string;
   lastSeenAt: string;
+  lastConfirmedAt: string;
   state: "playable" | "grey" | "missing";
 }
 
@@ -430,6 +460,7 @@ interface LikeListDbRow {
   netease_url: string;
   first_seen_at: string;
   last_seen_at: string;
+  last_confirmed_at: string;
   state: "playable" | "grey" | "missing";
 }
 
@@ -437,13 +468,14 @@ export async function listCurrentLikes(
   db: D1DatabasePort,
   options: { query?: string; offset?: number; limit?: number } = {},
 ): Promise<{ items: LikeListRow[]; nextOffset: number | null; total: number }> {
+  const hasLastConfirmedAt = await hasLastConfirmedColumn(db);
   const limit = Math.min(100, Math.max(1, options.limit ?? 40));
   const offset = Math.max(0, options.offset ?? 0);
   const query = `%${(options.query ?? "").trim()}%`;
   const [listResult, countRow] = await Promise.all([
     db.prepare(`
       SELECT s.id, s.title, s.artists, s.album, s.cover_url, s.netease_url,
-             m.first_seen_at, m.last_seen_at,
+             m.first_seen_at, m.last_seen_at, ${hasLastConfirmedAt ? "m.last_confirmed_at" : "m.last_seen_at AS last_confirmed_at"},
              CASE
                WHEN m.bucket = 'anomaly' THEN m.anomaly_type
                ELSE 'playable'
@@ -473,6 +505,7 @@ export async function listCurrentLikes(
       neteaseUrl: row.netease_url,
       firstSeenAt: row.first_seen_at,
       lastSeenAt: row.last_seen_at,
+      lastConfirmedAt: row.last_confirmed_at,
       state: row.state,
     })),
     nextOffset: hasMore ? offset + limit : null,
