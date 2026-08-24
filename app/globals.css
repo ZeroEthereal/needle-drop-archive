@@ -1293,8 +1293,8 @@ input:focus-visible {
 
 .likes-grid {
   display: grid;
-  grid-template-columns: minmax(230px, 1.8fr) minmax(130px, 1fr) 110px 110px minmax(90px,.6fr) 42px;
-  gap: 13px;
+  grid-template-columns: minmax(260px, 2.1fr) minmax(180px, 1.6fr) minmax(125px, .95fr) minmax(125px, .95fr) minmax(80px, .55fr) 42px;
+  gap: 16px;
 }
 
 .like-row {
@@ -2139,7 +2139,7 @@ input:focus-visible {
   .content-stage { padding-inline: 30px; }
   .vinyl-hero { grid-template-columns: 1.2fr .8fr; }
   .recovery-grid { grid-template-columns: minmax(230px,1.3fr) 94px 100px 100px minmax(286px,auto); gap: 10px; }
-  .likes-grid { grid-template-columns: minmax(210px,1.8fr) minmax(110px,1fr) 100px 100px 80px 38px; gap: 9px; }
+  .likes-grid { grid-template-columns: minmax(210px,2fr) minmax(150px,1.5fr) 100px 100px 72px 38px; gap: 10px; }
   .connection-card { grid-template-columns: auto 1fr; }
   .connection-actions { grid-column: 1 / -1; grid-template-columns: repeat(2,max-content); }
 }
