@@ -971,7 +971,7 @@ function SyncView({
 }) {
   const currentPhase = phaseIndex(status?.phase);
   const isActive = status?.state === "running" || status?.state === "queued";
-  const steps = ["验证会话", "读取歌单", "检查歌曲", "比对快照", "安全入库"];
+  const steps = ["验证会话", "读取歌单", "检查状态", "复核异常", "安全入库"];
   const sessionGood = status?.sessionStatus === "valid";
   const configured = status?.setupState === "ready" && Boolean(status.playlist);
   const progressStyle = status?.progress !== undefined
