@@ -9,7 +9,7 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors one Ne
 
 当前版本坚持“一名用户部署一套实例，一个实例绑定一个网易账号和一个歌单”。歌单可以是自建、私密或收藏的他人歌单；收藏歌单会显示所有者，并提醒对方修改也会被记录为变化。
 
-## 最方便的三种部署方式
+## 三种部署方式
 
 ### 1. Deploy to Cloudflare（推荐，无需下载）
 
@@ -30,6 +30,11 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors one Ne
 希望完全掌握每一步，或需要排查问题时，请使用 [完整部署与运维指南](./DEPLOYMENT.md)。首版本地自动安装脚本正式支持 Windows；macOS/Linux 用户优先使用官方按钮。
 
 三条路径调用同一套 migration 和部署程序，不维护三套业务实现。重新执行部署会复用已有 D1 和 `SESSION_ENCRYPTION_KEY`，不会因为本地项目被删除或重新下载而清空线上数据。
+
+## 推荐几个音乐资源站
+
+- 歌曲宝：https://www.gequbao.com/
+- gdstudio：https://music.gdstudio.xyz/
 
 ## 工作方式
 
