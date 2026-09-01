@@ -445,6 +445,19 @@ function SongCover({ song, size = "regular" }: { song: SongRecord; size?: "regul
   );
 }
 
+function NeteaseAvatar({ avatarUrl }: { avatarUrl?: string }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <div className="connection-icon netease-icon" aria-hidden="true">
+      {avatarUrl && !failed ? (
+        // NetEase profile images are remote user data and may use different CDN hosts.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={avatarUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+      ) : <span>{"\u266a"}</span>}
+    </div>
+  );
+}
+
 function SearchBox({
   value,
   onChange,
@@ -1056,7 +1069,7 @@ function SyncView({
 
           <section className="connection-grid">
             <article className="connection-card glass-panel">
-              <div className="connection-icon netease-icon" aria-hidden="true"><span>♪</span></div>
+              <NeteaseAvatar key={status.profile?.avatarUrl} avatarUrl={status.profile?.avatarUrl} />
               <div className="connection-copy">
                 <p className="micro-label">NETEASE SESSION</p>
                 <h3>{status.profile?.nickname || "网易云登录态"}</h3>
