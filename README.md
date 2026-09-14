@@ -62,6 +62,7 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors one Ne
 - D1 保存实例配置、歌曲状态、同步历史及加密后的网易会话；
 - `SESSION_ENCRYPTION_KEY` 只保存在 Worker Secret，与 D1 分离；
 - Cloudflare Workflow 执行同步，Cron Trigger 每天启动一次；
+- Workers Observability 默认保存全部 Worker 调用日志，便于在 Cloudflare 控制台按请求、响应和异常排查问题；
 - Cloudflare Access 保护整个网站；Worker 还会验证 JWT 签名、issuer、Audience、精确邮箱和写请求来源；
 - 网易登录只负责读取音乐账号，不能替代网站的 Cloudflare Access 身份认证；
 - 未选中的歌单列表只在受保护响应中短暂传输，不长期保存。
@@ -104,6 +105,7 @@ npm run deploy:dry-run
 - [安全、隐私与漏洞报告](./SECURITY.md)
 - [网易登录与歌单绑定设计](./NETEASE_LOGIN_AND_PLAYLIST_BINDING.md)
 - [歌曲状态工作流](./MANAGED_SONGS_WORKFLOW.md)
+- [Workers Observability 与日志说明](./WORKERS_OBSERVABILITY.md)
 - [未来开发方向](./FUTURE_DEVELOPMENT_DIRECTIONS.md)
 
 ## 限制与声明

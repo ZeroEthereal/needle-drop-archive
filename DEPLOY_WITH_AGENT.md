@@ -48,6 +48,7 @@ npm ci
 - 页面可以生成网易云登录二维码；
 - 扫码后可以选择歌单并建立首份基线；
 - D1、Workflow 和每日 Cron 均属于用户自己的 Cloudflare 账户；
+- Workers Observability 已启用，可以在 Cloudflare 控制台查询部署后的 Worker 调用日志；
 - 删除本地项目目录不会影响已经部署的实例。
 
 ## 依赖变更

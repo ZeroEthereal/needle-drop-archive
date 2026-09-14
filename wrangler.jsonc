@@ -11,6 +11,13 @@
   "preview_urls": false,
   "keep_vars": true,
 
+  // Persist every Worker invocation so fresh deployments can diagnose runtime
+  // and upstream failures from the Cloudflare dashboard.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",

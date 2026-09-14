@@ -139,6 +139,14 @@ npm run deploy:full
 
 真实值只进入被忽略的 `wrangler.private.jsonc`。
 
+## Workers Observability
+
+三种部署方式都会继承 `wrangler.jsonc` 中的 Observability 配置，无需在 Cloudflare 控制台额外启用。项目默认以 `head_sampling_rate: 1` 保存全部 Worker 调用日志；部署完成后，可在 **Workers & Pages → 当前 Worker → Observability** 中按请求路径、响应状态、执行结果和异常筛选日志。
+
+日志只从启用后的新请求开始保存，不会补录部署前的历史，也不会记录尚未到达 Worker 的浏览器网络失败。Cloudflare 免费 Workers 套餐当前包含每天 200,000 条日志并保留 3 天；付费 Workers 套餐包含每月 2,000 万条日志并保留 7 天，超出部分按 Cloudflare 当前价格计费。项目当前流量适合使用完整采样；若部署者以后显著扩大流量，应按 [Cloudflare Workers Logs 文档](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) 调低 `head_sampling_rate`。
+
+Worker 代码不得把网易 Cookie、Access JWT、Secret 或其他身份凭据写入 `console`。当前自定义运行日志只记录网易请求失败的端点、分类、状态和错误摘要。
+
 ## 首次使用验收
 
 1. 打开 Worker 的 `workers.dev` 地址；
