@@ -35,6 +35,7 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors one Ne
 
 - 歌曲宝：https://www.gequbao.com/
 - gdstudio：https://music.gdstudio.xyz/
+- openflac：https://www.openflac.com/
 
 ## 工作方式
 
