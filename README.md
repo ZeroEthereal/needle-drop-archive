@@ -3,11 +3,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ZeroEthereal/needle-drop-archive)
 
-“拾针”会持续保存一个网易云歌单的账号视角快照，发现歌曲消失或变灰时及时提醒，避免歌曲悄无声息地从收藏中丢失。它不下载、上传或保存音乐文件。
+“拾针”会持续保存同一网易账号下 1–20 个歌单的账号视角快照，发现歌曲消失或变灰时及时提醒，避免歌曲悄无声息地从收藏中丢失。它不下载、上传或保存音乐文件。
 
-Needle Drop Archive is a self-hosted Cloudflare application that monitors one NetEase Cloud Music playlist for missing or unavailable tracks. Each user deploys and owns an independent instance and its data.
+Needle Drop Archive is a self-hosted Cloudflare application that monitors up to 20 NetEase Cloud Music playlists under one account. Each user deploys and owns an independent instance and its data.
 
-当前版本坚持“一名用户部署一套实例，一个实例绑定一个网易账号和一个歌单”。歌单可以是自建、私密或收藏的他人歌单；收藏歌单会显示所有者，并提醒对方修改也会被记录为变化。
+当前版本坚持“一名用户部署一套实例，一个实例绑定一个网易账号”。同一账号可选择 1–20 个可访问的非空歌单，包含自建、私密或收藏的他人歌单。
 
 ## 三种部署方式
 
@@ -49,10 +49,13 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors one Ne
 
 因此真实异常会在当次完整复核后立即进入异常列表，不等待跨自然日确认。
 
-首次打开网站时，用户依次完成“连接网易云 → 扫码登录 → 自动读取全部可访问歌单 → 选择一个歌单 → 自动建立基线”。已配置后可以：
+首次打开网站时，用户依次完成“连接网易云 → 扫码登录 → 自动读取全部可访问歌单 → 勾选 1–20 个非空歌单 → 自动建立全部基线”。已配置后可以：
 
-- “重新授权”：同一网易 UID 无损替换加密会话；不同 UID 在新账号和新歌单完整验证成功前不会影响旧实例；
-- “重绑歌单”：新基线成功后原子切换，失败时保留旧账号、旧歌单和旧历史。
+- “重新授权”：同一网易 UID 无损替换加密会话；不同 UID 在新账号整组歌单完整验证成功前不会影响旧实例；
+- “管理监控歌单”：先为全部新增项建立基线，全部成功后原子更新选择；取消监控前会列出受影响歌单并要求确认。
+- “从网易云重建基线”：确认后为当前账号全部已选非空歌单获取新快照；整组成功才原子替换旧状态、待找回和旧同步记录，读取失败不动原数据。
+
+每天北京时间 03:17 会依次同步全部歌单；“同步状态”的按钮执行同样的全量流程，歌单页按钮只同步当前歌单。待找回按网易歌曲 ID 合并，任一歌单消失则汇总状态为“消失”，否则为“变灰”；歌单标签仍显示各自真实状态。
 
 网易会话会由定时任务加密复用，无需每天扫码。
 
@@ -61,7 +64,7 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors one Ne
 - vinext/React 页面由 Workers Static Assets 提供，Hono API 在 Worker 中运行；
 - D1 保存实例配置、歌曲状态、同步历史及加密后的网易会话；
 - `SESSION_ENCRYPTION_KEY` 只保存在 Worker Secret，与 D1 分离；
-- Cloudflare Workflow 执行同步，Cron Trigger 每天启动一次；
+- 一个批次协调 Workflow 顺序派发逐歌单 Workflow，Cron Trigger 每天启动一次全量批次；
 - Workers Observability 默认保存全部 Worker 调用日志，便于在 Cloudflare 控制台按请求、响应和异常排查问题；
 - Cloudflare Access 保护整个网站；Worker 还会验证 JWT 签名、issuer、Audience、精确邮箱和写请求来源；
 - 网易登录只负责读取音乐账号，不能替代网站的 Cloudflare Access 身份认证；
@@ -104,6 +107,7 @@ npm run deploy:dry-run
 - [项目结构与开发指南](./PROJECT_GUIDE.md)
 - [安全、隐私与漏洞报告](./SECURITY.md)
 - [网易登录与歌单绑定设计](./NETEASE_LOGIN_AND_PLAYLIST_BINDING.md)
+- [多歌单监控的数据、同步与页面规则](./MULTI_PLAYLIST_MONITORING.md)
 - [歌曲状态工作流](./MANAGED_SONGS_WORKFLOW.md)
 - [Workers Observability 与日志说明](./WORKERS_OBSERVABILITY.md)
 - [未来开发方向](./FUTURE_DEVELOPMENT_DIRECTIONS.md)

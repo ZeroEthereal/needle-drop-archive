@@ -137,6 +137,10 @@ export async function pollAuthFlow(env: Env, id: string): Promise<PublicAuthFlow
   const flow = await authFlow(env, id);
   if (!flow) return null;
   if (Date.parse(flow.expires_at) <= Date.now()) {
+    const pendingSet = flow.session_id ? await env.DB.prepare(`SELECT id FROM pending_playlist_sets
+      WHERE session_id = ? AND status IN ('preparing', 'running') LIMIT 1`)
+      .bind(flow.session_id).first<{ id: string }>() : null;
+    if (pendingSet) return { id, mode: flow.mode, state: "authorized", expiresAt: flow.expires_at };
     const statements = [env.DB.prepare("DELETE FROM netease_auth_flows WHERE id = ?").bind(id)];
     if (flow.session_id && flow.session_id !== "primary") {
       statements.push(env.DB.prepare("DELETE FROM netease_sessions WHERE id = ?").bind(flow.session_id));
@@ -250,7 +254,7 @@ export async function cancelAuthFlow(env: Env, id: string): Promise<boolean> {
   if (!flow) return false;
   const activeBinding = flow.session_id
     ? await env.DB.prepare(`
-        SELECT id FROM pending_playlist_bindings WHERE session_id = ? LIMIT 1
+        SELECT id FROM pending_playlist_sets WHERE session_id = ? AND status IN ('preparing', 'running') LIMIT 1
       `).bind(flow.session_id).first<{ id: string }>()
     : null;
   if (activeBinding) return false;

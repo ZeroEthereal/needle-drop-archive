@@ -25,6 +25,34 @@ export interface RecoveryItem {
   song: SongRecord;
   lastNormalAt?: string;
   confirmedAt?: string;
+  contexts: Array<{ playlistId: string; playlistName: string; kind: RecoveryKind }>;
+}
+
+export interface PlaylistTask {
+  playlistId: string;
+  playlistName: string;
+  status: "unexecuted" | "queued" | "running" | "success" | "failed";
+  phase?: string;
+  error?: string;
+  workflowId?: string;
+  completedAt?: string;
+}
+
+export interface MonitoredPlaylistStatus {
+  id: string; name: string; coverUrl?: string; ownerUid?: string;
+  ownerName?: string; owned: boolean; specialType?: number;
+  listOrder: number; boundAt?: string; totalSongCount: number;
+  normalCount: number; missingCount: number; greyCount: number;
+  task?: PlaylistTask;
+}
+
+export interface SyncBatchStatus {
+  id: string; trigger: "manual" | "scheduled";
+  scope: "all" | "playlist";
+  status: "queued" | "running" | "success" | "failed";
+  playlistCount: number; successCount: number; failureCount: number;
+  unexecutedCount: number; currentPlaylistId?: string;
+  createdAt?: string; completedAt?: string; tasks: PlaylistTask[];
 }
 
 export type SessionStatus =
@@ -56,6 +84,13 @@ export interface SyncStatus {
   sessionStatus: SessionStatus;
   error?: string;
   progress?: number;
+  recoveryTotal?: number;
+  recoveryGreyCount?: number;
+  recoveryMissingCount?: number;
+  playlists?: MonitoredPlaylistStatus[];
+  batch?: SyncBatchStatus;
+  completedBatch?: SyncBatchStatus;
+  manualSyncDisabled?: boolean;
   profile?: {
     userId?: string;
     nickname?: string;
@@ -113,4 +148,5 @@ export interface PlaylistChoice {
   ownerName: string;
   owned: boolean;
   private: boolean;
+  specialType?: number;
 }

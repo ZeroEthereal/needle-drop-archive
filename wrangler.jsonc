@@ -36,6 +36,11 @@
       "name": "needle-drop-archive-sync",
       "binding": "MUSIC_SYNC",
       "class_name": "MusicSyncWorkflow"
+    },
+    {
+      "name": "needle-drop-archive-batch",
+      "binding": "MUSIC_BATCH",
+      "class_name": "MusicBatchWorkflow"
     }
   ],
 

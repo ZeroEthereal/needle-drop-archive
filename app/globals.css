@@ -228,6 +228,10 @@ input:focus-visible {
   margin-top: 48px;
 }
 
+.sidebar-playlists { display: grid; gap: 3px; max-height: min(42vh,430px); overflow-y: auto; margin: 0 5px 6px 26px; padding-left: 12px; border-left: 1px solid rgba(255,255,255,.12); }
+.sidebar nav .sidebar-playlists button { display: flex; min-height: 38px; justify-content: space-between; gap: 8px; padding: 5px 9px; border-radius: 9px; font-size: 11px; }
+.sidebar nav .sidebar-playlists button small { margin: 0; letter-spacing: 0; white-space: nowrap; }
+
 .sidebar nav button {
   position: relative;
   display: grid;
@@ -911,9 +915,17 @@ input:focus-visible {
 
 .recovery-grid {
   display: grid;
-  grid-template-columns: minmax(250px, 1.5fr) minmax(100px,.55fr) minmax(100px,.6fr) minmax(100px,.6fr) minmax(296px,auto);
+  grid-template-columns: minmax(210px,1.5fr) 90px 110px minmax(170px,1fr) minmax(250px,auto);
   gap: 14px;
 }
+
+.recovery-contexts { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.context-tag { max-width: 180px; overflow: hidden; padding: 5px 7px; border-radius: 7px; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.context-tag.kind-grey { background: rgba(152,110,255,.13); color: #ceafff; }
+.context-tag.kind-missing { background: rgba(255,105,135,.12); color: #ff93a8; }
+.recovery-contexts button { border: 0; background: transparent; color: var(--cyan); font-size: 10px; cursor: pointer; }
+.playlist-filter-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.playlist-filter-label select { max-width: 180px; min-height: 40px; padding: 0 8px; border: 1px solid var(--line); border-radius: 9px; background: #21192d; color: white; }
 
 .recovery-list,
 .likes-table {
@@ -1902,9 +1914,9 @@ input:focus-visible {
   margin-top: 22px;
 }
 
-.playlist-choice-list > button {
+.playlist-choice-list > .playlist-choice {
   display: grid;
-  grid-template-columns: 54px 1fr auto;
+  grid-template-columns: 22px 54px 1fr auto;
   align-items: center;
   gap: 13px;
   min-height: 70px;
@@ -1917,10 +1929,29 @@ input:focus-visible {
   cursor: pointer;
 }
 
-.playlist-choice-list > button:hover {
+.playlist-choice-list > .playlist-choice:hover,
+.playlist-choice-list > .playlist-choice.is-selected {
   border-color: rgba(57,231,255,.38);
   background: rgba(57,231,255,.07);
 }
+
+.playlist-choice input { accent-color: #d34cdd; width: 17px; height: 17px; }
+.playlist-picker .modal-actions { margin-top: 20px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.playlist-picker .modal-actions span { color: var(--muted); font-size: 12px; }
+.playlist-picker .modal-actions .quiet-button { min-height: 44px; }
+.batch-results { padding: 22px; border-radius: 18px; }
+.batch-results h3 { margin: 0 0 8px; font-size: 17px; }
+.batch-results > p { margin: 0 0 15px; color: var(--muted); font-size: 12px; }
+.batch-results > div { display: grid; gap: 6px; }
+.batch-task { display: grid; grid-template-columns: 1fr auto; gap: 4px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px; font-size: 12px; }
+.batch-task span { color: var(--muted); }
+.batch-task.state-success span { color: var(--lime); }
+.batch-task.state-failed span { color: var(--red); }
+.batch-task small { grid-column: 1 / -1; color: var(--muted); }
+.mobile-playlist-drawer { display: grid; gap: 8px; align-content: start; }
+.mobile-playlist-drawer > button:not(.modal-close) { display: flex; justify-content: space-between; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.04); color: white; text-align: left; }
+.mobile-playlist-drawer > button.is-active { border-color: var(--pink); }
+.batch-summary-modal > p:not(.micro-label) { margin: 16px 0; color: var(--muted); }
 
 .playlist-choice-list img,
 .playlist-choice-cover {
@@ -2170,7 +2201,7 @@ input:focus-visible {
   :root { --sidebar: 224px; }
   .content-stage { padding-inline: 30px; }
   .vinyl-hero { grid-template-columns: 1.2fr .8fr; }
-  .recovery-grid { grid-template-columns: minmax(230px,1.3fr) 94px 100px 100px minmax(286px,auto); gap: 10px; }
+  .recovery-grid { grid-template-columns: minmax(200px,1.3fr) 85px 100px minmax(130px,1fr) minmax(230px,auto); gap: 10px; }
   .likes-grid { grid-template-columns: minmax(210px,2fr) minmax(150px,1.5fr) 100px 100px 72px 38px; gap: 10px; }
   .connection-card { grid-template-columns: auto 1fr; }
   .connection-actions { grid-column: 1 / -1; grid-template-columns: repeat(2,max-content); }
@@ -2228,6 +2259,7 @@ input:focus-visible {
   .recovery-row { min-height: 114px; padding: 16px; }
   .recovery-row > div:nth-child(2) { justify-self: end; }
   .recovery-row > time { display: none; }
+  .recovery-row .recovery-contexts { grid-column: 1 / -1; }
   .recovery-row .row-actions { grid-column: 1 / -1; justify-content: flex-end; }
   .likes-grid { grid-template-columns: minmax(0,1fr) auto 38px; }
   .like-row .album-cell,

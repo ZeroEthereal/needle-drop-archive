@@ -63,6 +63,7 @@ export interface PlaylistDetail {
   ownerName: string;
   coverUrl: string | null;
   privacy: number | null;
+  specialType: number | null;
   trackCount: number;
   cloudTrackCount: number;
   trackIds: string[];

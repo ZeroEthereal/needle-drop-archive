@@ -84,13 +84,14 @@ export function toShanghaiDate(value: string | Date): string {
 
 export function assertCompleteSnapshot(
   snapshot: CompletePlaylistSnapshot,
+  allowEmpty = false,
 ): CompletePlaylistSnapshot {
   toShanghaiDate(snapshot.observedAt);
 
   if (snapshot.complete !== true) {
     throw new InvalidSnapshotError("INCOMPLETE_SNAPSHOT", "snapshot was not marked complete");
   }
-  if (!Number.isSafeInteger(snapshot.declaredTrackCount) || snapshot.declaredTrackCount <= 0) {
+  if (!Number.isSafeInteger(snapshot.declaredTrackCount) || snapshot.declaredTrackCount < (allowEmpty ? 0 : 1)) {
     throw new InvalidSnapshotError(
       "INVALID_TRACK_COUNT",
       "declaredTrackCount must be a positive safe integer",
@@ -159,11 +160,14 @@ function sameManagedSong(a: ManagedSongState, b: ManagedSongState): boolean {
 export function planSnapshotSync(
   input: CompletePlaylistSnapshot,
   state: SyncState,
+  baselineAlreadyEstablished?: boolean,
 ): SyncPlan {
-  const snapshot = assertCompleteSnapshot(input);
+  const snapshot = assertCompleteSnapshot(input, baselineAlreadyEstablished === true);
   const observedAt = new Date(snapshot.observedAt).toISOString();
   const shanghaiDate = toShanghaiDate(observedAt);
-  const baselineEstablished = state.managedSongs.length === 0;
+  const baselineEstablished = baselineAlreadyEstablished === undefined
+    ? state.managedSongs.length === 0
+    : !baselineAlreadyEstablished;
   const original = new Map(
     state.managedSongs.map((row) => [row.songId, { ...row }]),
   );

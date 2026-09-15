@@ -1,11 +1,8 @@
 import { Hono } from "hono";
 import { NeteaseClient, NeteaseError } from "../lib/netease";
 import {
-  completeManagedSong,
   getSetting,
   getSyncOverview,
-  listCurrentLikes,
-  listOpenRecovery,
   putSetting,
 } from "../lib/sync";
 import { AccessDeniedError, assertSameOriginMutation, requireAccessIdentity } from "./access";
@@ -13,7 +10,6 @@ import type { Env } from "./env";
 import {
   getNeteaseSessionHealth,
 } from "./session-store";
-import { runMusicSync } from "./sync-runner";
 import {
   authFlowQrSvg,
   cancelAuthFlow,
@@ -22,8 +18,13 @@ import {
   sessionForPlaylistRequest,
   type AuthFlowMode,
 } from "./auth-flows";
-import { ensureInstanceConfig, playlistPublicMetadata } from "./instance-config";
-import { runPlaylistBinding } from "./binding-runner";
+import { ensureInstanceConfig, getInstanceConfig, playlistPublicMetadata } from "./instance-config";
+import {
+  completeSongEverywhere, defaultPlaylist, listMonitoredPlaylists,
+  listMultiRecovery, listPlaylistSongs,
+} from "../lib/sync/multi-repository";
+import { createSyncBatch, latestBatchStatus, latestCompletedBatch } from "./sync-batches";
+import type { PlaylistSelection } from "./playlist-set-binding";
 
 const QR_CREATE_COOLDOWN_MS = 5_000;
 const MANUAL_SYNC_PENDING_MS = 15 * 60 * 1_000;
@@ -192,8 +193,13 @@ app.get("/api/recovery", async (context) => {
     throw new ApiError(400, "INVALID_RECOVERY_TYPE", "type 只能是 missing 或 grey。");
   }
   const type = requestedType === "missing" || requestedType === "grey" ? requestedType : undefined;
-  const page = await listOpenRecovery(context.env.DB, {
+  const requestedPlaylist = url.searchParams.get("playlistId");
+  const monitored = await listMonitoredPlaylists(context.env.DB);
+  if (requestedPlaylist && requestedPlaylist !== "all" && !monitored.some((p) => p.id === requestedPlaylist))
+    throw new ApiError(400, "INVALID_PLAYLIST", "所选歌单未受监控。");
+  const page = await listMultiRecovery(context.env.DB, {
     type,
+    playlistId: requestedPlaylist && requestedPlaylist !== "all" ? requestedPlaylist : undefined,
     query: searchQuery(url),
     offset,
     limit,
@@ -201,6 +207,7 @@ app.get("/api/recovery", async (context) => {
   return context.json({
     items: page.items,
     nextCursor: nextCursor(page.nextOffset),
+    total: page.total,
   });
 });
 
@@ -209,7 +216,15 @@ app.post("/api/recovery/:songId/complete", async (context) => {
   if (!songId || songId.length > 200) {
     throw new ApiError(400, "INVALID_SONG_ID", "歌曲 ID 无效。");
   }
-  const result = await completeManagedSong(context.env.DB, songId);
+  const config = await getInstanceConfig(context.env);
+  if (!config.accountUid || config.status !== "ready")
+    throw new ApiError(409, "INSTANCE_NOT_CONFIGURED", "尚未连接网易账号。");
+  const result = await completeSongEverywhere(context.env.DB, songId,
+    config.bindingVersion, config.accountUid);
+  if (result === "binding_changed")
+    throw new ApiError(409, "BINDING_CHANGED", "监控歌单已变化，请刷新后重试。");
+  if (result === "sync_in_progress")
+    throw new ApiError(409, "SYNC_IN_PROGRESS", "同步或调整歌单期间暂不能完成歌曲，请稍后重试。");
   if (result === "normal") {
     return context.json({ completed: false, restored: true, songId });
   }
@@ -222,7 +237,11 @@ app.post("/api/recovery/:songId/complete", async (context) => {
 app.get("/api/likes", async (context) => {
   const url = new URL(context.req.url);
   const { offset, limit } = pagination(url);
-  const page = await listCurrentLikes(context.env.DB, {
+  const playlists = await listMonitoredPlaylists(context.env.DB);
+  const playlistId = url.searchParams.get("playlistId") ?? defaultPlaylist(playlists)?.id;
+  if (!playlistId || !playlists.some((playlist) => playlist.id === playlistId))
+    throw new ApiError(400, "PLAYLIST_NOT_MONITORED", "请选择一个已监控歌单。");
+  const page = await listPlaylistSongs(context.env.DB, playlistId, {
     query: searchQuery(url),
     offset,
     limit,
@@ -231,11 +250,12 @@ app.get("/api/likes", async (context) => {
     items: page.items,
     nextCursor: nextCursor(page.nextOffset),
     total: page.total,
+    playlistId,
   });
 });
 
 app.get("/api/sync/status", async (context) => {
-  const [overview, session, config, latest, queue, pending] = await Promise.all([
+  const [overview, session, config, latest, queue, pending, playlists, batch, recoveryCounts, playlistTasks, completedBatch, lastBatchSuccess] = await Promise.all([
     getSyncOverview(context.env.DB),
     getNeteaseSessionHealth(context.env),
     ensureInstanceConfig(context.env),
@@ -243,7 +263,7 @@ app.get("/api/sync/status", async (context) => {
     safeSetting<ManualSyncQueue>(context.env, "manual_sync_queue"),
     context.env.DB.prepare(`
       SELECT id, status, error_code, error_message, workflow_id, created_at, updated_at
-      FROM pending_playlist_bindings ORDER BY created_at DESC LIMIT 1
+      FROM pending_playlist_sets ORDER BY created_at DESC LIMIT 1
     `).first<{
       id: string;
       status: "preparing" | "running" | "failed";
@@ -253,16 +273,45 @@ app.get("/api/sync/status", async (context) => {
       created_at: string;
       updated_at: string;
     }>(),
+    listMonitoredPlaylists(context.env.DB),
+    latestBatchStatus(context.env),
+    context.env.DB.prepare(`SELECT COUNT(DISTINCT song_id) AS total,
+      COUNT(DISTINCT CASE WHEN anomaly_type = 'grey' THEN song_id END) AS grey,
+      COUNT(DISTINCT CASE WHEN anomaly_type = 'missing' THEN song_id END) AS missing
+      FROM playlist_song_states WHERE bucket = 'anomaly'`)
+      .first<{ total: number; grey: number; missing: number }>(),
+    context.env.DB.prepare(`SELECT * FROM (
+      SELECT t.*, ROW_NUMBER() OVER (PARTITION BY t.playlist_id
+        ORDER BY datetime(b.created_at) DESC, b.id DESC) AS rank
+      FROM sync_playlist_tasks t JOIN sync_batches b ON b.id = t.batch_id)
+      WHERE rank = 1`).all<Record<string, unknown>>(),
+    latestCompletedBatch(context.env),
+    context.env.DB.prepare(`SELECT completed_at FROM sync_batches
+      WHERE status = 'success' AND scope = 'all'
+      ORDER BY datetime(completed_at) DESC, id DESC LIMIT 1`)
+      .first<{ completed_at: string | null }>(),
   ]);
 
-  const queued = queueIsPending(queue, latest);
+  const queued = batch?.batch.status === "queued" || queueIsPending(queue, latest);
   const sessionStatus = publicSessionState(session.state);
+  const selected = defaultPlaylist(playlists);
+  const batchState = batch?.batch.status as "queued" | "running" | "success" | "failed" | undefined;
 
   return context.json({
     ...overview,
-    state: queued ? "queued" : overview.state,
-    phase: queued ? "queued" : overview.phase,
+    state: queued ? "queued" : batchState ?? (config.bindingVersion <= 1 ? overview.state : "idle"),
+    phase: queued ? "queued" : batchState === "running"
+      ? String(batch?.tasks.find((task) => task.playlist_id === batch.batch.current_playlist_id)?.phase ?? "validate_session")
+      : overview.phase,
     nextRunAt: nextShanghaiRun(),
+    progress: batch ? (Number(batch.batch.success_count) + Number(batch.batch.failure_count)) /
+      Math.max(1, Number(batch.batch.playlist_count)) : undefined,
+    lastSuccessAt: lastBatchSuccess?.completed_at ??
+      (config.bindingVersion <= 1 ? overview.lastSuccessAt : null),
+    error: batchState === "failed"
+      ? String(batch?.tasks.find((task) => task.status === "failed")?.error_message ??
+        batch?.batch.error_message ?? "部分歌单没有完成同步。")
+      : null,
     sessionStatus,
     session: {
       state: sessionStatus,
@@ -277,15 +326,31 @@ app.get("/api/sync/status", async (context) => {
       avatarUrl: config.accountAvatarUrl,
       connectedAt: config.boundAt,
     } : null,
-    playlist: config.playlistId ? {
-      id: config.playlistId,
-      name: config.playlistName ?? "已绑定歌单",
-      coverUrl: config.playlistCoverUrl,
-      ownerUid: config.playlistOwnerUid,
-      ownerName: config.playlistOwnerName,
-      owned: config.playlistOwned,
-      boundAt: config.boundAt,
+    playlist: selected ? {
+      id: selected.id,
+      name: selected.name,
+      coverUrl: selected.coverUrl,
+      ownerUid: selected.ownerUid,
+      ownerName: selected.ownerName,
+      owned: selected.owned,
+      boundAt: selected.boundAt,
     } : null,
+    playlists: playlists.map((item) => ({
+      id: item.id, name: item.name, coverUrl: item.coverUrl,
+      ownerUid: item.ownerUid, ownerName: item.ownerName, owned: item.owned,
+      specialType: item.specialType, listOrder: item.listOrder,
+      boundAt: item.boundAt, totalSongCount: item.totalSongCount,
+      normalCount: item.normalCount, missingCount: item.missingCount,
+      greyCount: item.greyCount,
+      task: playlistTasks.results?.find((task) => task.playlist_id === item.id) ?? null,
+    })),
+    batch: batch ? { ...batch.batch, tasks: batch.tasks } : null,
+    completedBatch,
+    manualSyncDisabled: batch?.batch.status === "queued" || batch?.batch.status === "running" ||
+      pending?.status === "preparing" || pending?.status === "running",
+    recoveryTotal: Number(recoveryCounts?.total ?? 0),
+    recoveryGreyCount: Number(recoveryCounts?.grey ?? 0),
+    recoveryMissingCount: Number(recoveryCounts?.missing ?? 0),
     binding: pending ? {
       id: pending.id,
       state: pending.status,
@@ -302,34 +367,22 @@ app.get("/api/sync/status", async (context) => {
 
 app.post("/api/sync", async (context) => {
   const config = await ensureInstanceConfig(context.env);
-  if (config.status !== "ready" || !config.accountUid || !config.playlistId) {
+  if (config.status !== "ready" || !config.accountUid) {
     throw new ApiError(409, "INSTANCE_NOT_CONFIGURED", "请先连接网易云并选择要监控的歌单。");
   }
-  const [queue, latest] = await Promise.all([
-    safeSetting<ManualSyncQueue>(context.env, "manual_sync_queue"),
-    latestSyncRun(context.env),
-  ]);
-  if (latest?.status === "running" || queueIsPending(queue, latest)) {
-    return context.json({ state: "queued", workflowId: queue?.id }, 202);
+  const body = await jsonBody(context);
+  const playlistId = body.playlistId === undefined ? undefined
+    : requiredNumericId(body.playlistId, "歌单 ID");
+  try {
+    const batchId = await createSyncBatch(context.env, "manual", playlistId);
+    return context.json({ state: "queued", batchId, playlistId: playlistId ?? null }, 202);
+  } catch (error) {
+    if (error instanceof Error && error.message === "SYNC_IN_PROGRESS")
+      throw new ApiError(409, "SYNC_IN_PROGRESS", "已有同步正在进行，请等待当前任务完成。");
+    if (error instanceof Error && error.message === "PLAYLIST_NOT_MONITORED")
+      throw new ApiError(400, "PLAYLIST_NOT_MONITORED", "所选歌单未受监控。");
+    throw error;
   }
-
-  const requestedAt = new Date().toISOString();
-  if (context.env.MUSIC_SYNC) {
-    const workflow = await context.env.MUSIC_SYNC.create({ params: { source: "manual" } });
-    await putSetting(context.env.DB, "manual_sync_queue", {
-      id: workflow.id,
-      requestedAt,
-    } satisfies ManualSyncQueue);
-    return context.json({ state: "queued", workflowId: workflow.id }, 202);
-  }
-
-  const localRunId = `local-${crypto.randomUUID()}`;
-  await putSetting(context.env.DB, "manual_sync_queue", {
-    id: localRunId,
-    requestedAt,
-  } satisfies ManualSyncQueue);
-  context.executionCtx.waitUntil(runMusicSync(context.env, "manual"));
-  return context.json({ state: "queued", workflowId: localRunId }, 202);
 });
 
 app.post("/api/netease/auth-flows", async (context) => {
@@ -407,17 +460,26 @@ app.post("/api/netease/playlists", async (context) => {
 app.post("/api/playlist-binding", async (context) => {
   const body = await jsonBody(context);
   const flowId = optionalFlowId(body.flowId);
-  const playlistId = requiredNumericId(body.playlistId, "歌单 ID");
+  const freshBaseline = body.freshBaseline === true;
+  const rawIds = body.playlistIds;
+  if (!Array.isArray(rawIds) || rawIds.length < 1 || rawIds.length > 20)
+    throw new ApiError(400, "INVALID_PLAYLIST_COUNT", "请选择 1–20 个歌单。");
+  const playlistIds = rawIds.map((id) => requiredNumericId(id, "歌单 ID"));
+  if (new Set(playlistIds).size !== playlistIds.length)
+    throw new ApiError(400, "DUPLICATE_PLAYLIST", "不能重复选择同一个歌单。");
   const stored = await sessionForPlaylistRequest(context.env, flowId);
   if (!stored) throw new ApiError(401, "NETEASE_SESSION_REQUIRED", "网易云登录流程已失效，请重新扫码。");
   const config = await ensureInstanceConfig(context.env);
   const existing = await context.env.DB.prepare(`
-    SELECT id FROM pending_playlist_bindings WHERE status IN ('preparing', 'running') LIMIT 1
+    SELECT id FROM pending_playlist_sets WHERE status IN ('preparing', 'running') LIMIT 1
   `).first<{ id: string }>();
   if (existing) throw new ApiError(409, "BINDING_IN_PROGRESS", "已有歌单正在建立基线，请等待它完成。");
+  const activeBatch = await context.env.DB.prepare(`SELECT id FROM sync_batches
+    WHERE status IN ('queued', 'running') LIMIT 1`).first<{ id: string }>();
+  if (activeBatch) throw new ApiError(409, "SYNC_IN_PROGRESS", "同步期间不能调整监控歌单。");
 
   const client = new NeteaseClient();
-  let selected = null as Awaited<ReturnType<NeteaseClient["getUserPlaylists"]>>["playlists"][number] | null;
+  const accessible: Awaited<ReturnType<NeteaseClient["getUserPlaylists"]>>["playlists"] = [];
   let offset = 0;
   const pageSignatures = new Set<string>();
   for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
@@ -425,25 +487,43 @@ app.post("/api/playlist-binding", async (context) => {
     const signature = page.playlists.map((playlist) => playlist.id).join(",");
     if (pageSignatures.has(signature)) break;
     pageSignatures.add(signature);
-    selected = page.playlists.find((playlist) => playlist.id === playlistId) ?? null;
-    if (selected || !page.hasMore) break;
+    accessible.push(...page.playlists);
+    if (playlistIds.every((id) => accessible.some((playlist) => playlist.id === id)) || !page.hasMore) break;
     if (page.playlists.length === 0) break;
     const nextOffset = offset + page.playlists.length;
     if (nextOffset <= offset) break;
     offset = nextOffset;
   }
-  if (!selected) throw new ApiError(404, "PLAYLIST_NOT_ACCESSIBLE", "没有在当前账号可访问的歌单中找到这个歌单。");
-  if (selected.trackCount <= 0) throw new ApiError(400, "EMPTY_PLAYLIST", "空歌单暂时无法建立监控基线。");
+  const selected = playlistIds.map((id) => accessible.find((playlist) => playlist.id === id));
+  if (selected.some((playlist) => !playlist))
+    throw new ApiError(404, "PLAYLIST_NOT_ACCESSIBLE", "所选歌单不全在当前账号可访问的列表中。");
+  const monitored = await listMonitoredPlaylists(context.env.DB);
+  const replacingAccount = config.accountUid !== stored.uid;
+  if (freshBaseline && (flowId || replacingAccount || body.confirmedFreshBaseline !== true))
+    throw new ApiError(400, "FRESH_BASELINE_CONFIRMATION_REQUIRED",
+      "重新建立基线只适用于当前账号，且必须确认清空旧歌曲状态。");
+  const oldIds = new Set(replacingAccount || freshBaseline ? [] : monitored.map((playlist) => playlist.id));
+  if (selected.some((playlist) => playlist!.trackCount <= 0 && !oldIds.has(playlist!.id)))
+    throw new ApiError(400, "EMPTY_PLAYLIST", "首次监控的歌单必须非空。");
+  const removed = monitored.filter((playlist) => replacingAccount || !playlistIds.includes(playlist.id));
+  if (removed.length > 0 && body.confirmedRemoval !== true)
+    throw new ApiError(409, "REMOVAL_CONFIRMATION_REQUIRED",
+      `取消监控会永久删除 ${removed.map((playlist) => playlist.name).join("、")} 的状态和历史，请确认。`);
+  const selections: PlaylistSelection[] = selected.map((playlist) => ({
+    id: playlist!.id, name: playlist!.name, coverUrl: playlist!.coverUrl,
+    ownerUid: playlist!.userId, ownerName: playlist!.ownerName,
+    owned: playlist!.userId === stored.uid, specialType: playlist!.specialType,
+    listOrder: accessible.findIndex((entry) => entry.id === playlist!.id),
+  })).sort((a, b) => a.listOrder - b.listOrder);
 
   const id = crypto.randomUUID();
   const sessionId = flowId ? `pending:${flowId}` : "primary";
   const inserted = await context.env.DB.prepare(`
-    INSERT INTO pending_playlist_bindings (
+    INSERT INTO pending_playlist_sets (
       id, auth_flow_id, session_id, account_uid, account_nickname, account_avatar_url,
-      playlist_id, playlist_name, playlist_cover_url, playlist_owner_uid,
-      playlist_owner_name, playlist_owned, base_binding_version, status,
+      playlist_json, base_binding_version, status, workflow_id,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'preparing', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'preparing', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
   `).bind(
     id,
     flowId ?? null,
@@ -453,30 +533,29 @@ app.post("/api/playlist-binding", async (context) => {
       .bind(flowId).first<{ account_nickname: string }>())?.account_nickname ?? "网易云用户" : config.accountNickname ?? "网易云用户",
     flowId ? (await context.env.DB.prepare("SELECT account_avatar_url FROM netease_auth_flows WHERE id = ?")
       .bind(flowId).first<{ account_avatar_url: string | null }>())?.account_avatar_url ?? null : config.accountAvatarUrl,
-    selected.id,
-    selected.name,
-    selected.coverUrl,
-    selected.userId,
-    selected.ownerName,
-    selected.userId === stored.uid ? 1 : 0,
+    JSON.stringify({ playlists: selections, freshBaseline }),
     config.bindingVersion,
+    `binding-${id}`,
   ).run();
   if (!inserted.success) throw new Error(inserted.error || "Could not create playlist binding request");
 
-  let workflowId = `local-${id}`;
-  if (context.env.MUSIC_SYNC) {
-    const workflow = await context.env.MUSIC_SYNC.create({ params: { action: "bind_playlist", bindingId: id } });
-    workflowId = workflow.id;
-  } else {
-    context.executionCtx.waitUntil(runPlaylistBinding(context.env, id));
+  if (!context.env.MUSIC_BATCH) throw new Error("MUSIC_BATCH workflow binding is unavailable");
+  try {
+    await context.env.MUSIC_BATCH.create({ id: `binding-${id}`,
+      params: { action: "bind_playlist_set", bindingId: id } });
+  } catch (error) {
+    await context.env.DB.prepare(`UPDATE pending_playlist_sets SET status = 'failed',
+      error_code = 'WORKFLOW_DISPATCH_FAILED', error_message = ? WHERE id = ?`)
+      .bind((error instanceof Error ? error.message : "Workflow 派发失败").slice(0, 500), id)
+      .run().catch(() => undefined);
+    throw error;
   }
-  await context.env.DB.prepare("UPDATE pending_playlist_bindings SET workflow_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-    .bind(workflowId, id).run();
+  const workflowId = `binding-${id}`;
   return context.json({
     state: "preparing",
     bindingId: id,
     workflowId,
-    playlist: playlistPublicMetadata(selected, stored.uid),
+    playlists: selections,
   }, 202);
 });
 

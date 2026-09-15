@@ -24,8 +24,8 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
   return left.every((id) => rightIds.has(id));
 }
 
-function assertCompleteMembership(playlist: PlaylistDetail): void {
-  if (playlist.trackCount <= 0 || playlist.trackIds.length < playlist.trackCount) {
+function assertCompleteMembership(playlist: PlaylistDetail, allowEmpty = false): void {
+  if (playlist.trackCount < (allowEmpty ? 0 : 1) || playlist.trackIds.length < playlist.trackCount) {
     throw new NeteaseError(
       "incomplete_response",
       "网易云歌单复核没有返回完整成员，本次同步已停止。",
@@ -51,7 +51,7 @@ export async function verifySnapshotAnomalies(
 
   if (suspectedMissing.length > 0) {
     const secondPlaylist = await client.getPlaylistDetail(account.playlist.id, session);
-    assertCompleteMembership(secondPlaylist);
+    assertCompleteMembership(secondPlaylist, account.trackIds.length === 0);
     if (!sameIds(account.trackIds, secondPlaylist.trackIds)) {
       throw new NeteaseError(
         "incomplete_response",

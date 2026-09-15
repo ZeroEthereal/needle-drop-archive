@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -13,7 +14,9 @@ import type {
   CursorPage,
   LoadState,
   MotionMode,
+  MonitoredPlaylistStatus,
   PlaylistChoice,
+  PlaylistTask,
   QrLogin,
   QrLoginState,
   RecoveryItem,
@@ -23,6 +26,7 @@ import type {
   SongState,
   SyncState,
   SyncStatus,
+  SyncBatchStatus,
   ViewId,
 } from "../ui-types";
 
@@ -41,8 +45,8 @@ const navItems: Array<{
   glyph: string;
 }> = [
   { id: "recovery", label: "待找回", eyebrow: "RECOVER", glyph: "⌁" },
-  { id: "likes", label: "歌单歌曲", eyebrow: "LIBRARY", glyph: "♡" },
   { id: "sync", label: "同步状态", eyebrow: "PULSE", glyph: "↻" },
+  { id: "likes", label: "歌单歌曲", eyebrow: "LIBRARY", glyph: "♡" },
 ];
 
 const motionOptions: Array<{ id: MotionMode; label: string }> = [
@@ -163,6 +167,46 @@ function normalizeRecovery(value: unknown): RecoveryItem | null {
     song,
     lastNormalAt: firstString(value.lastNormalAt),
     confirmedAt: firstString(value.confirmedAt, value.detectedAt, value.createdAt),
+    contexts: Array.isArray(value.contexts) ? value.contexts.flatMap((context) => {
+      if (!isRecord(context)) return [];
+      const playlistId = firstString(context.playlistId);
+      const playlistName = firstString(context.playlistName);
+      const type = firstString(context.type);
+      if (!playlistId || !playlistName || (type !== "grey" && type !== "missing")) return [];
+      return [{ playlistId, playlistName, kind: type as RecoveryKind }];
+    }) : [],
+  };
+}
+
+function normalizeTask(value: unknown): PlaylistTask | undefined {
+  if (!isRecord(value)) return undefined;
+  const playlistId = firstString(value.playlist_id, value.playlistId);
+  if (!playlistId) return undefined;
+  return {
+    playlistId, playlistName: firstString(value.playlist_name, value.playlistName) ?? "歌单",
+    status: (firstString(value.status) ?? "unexecuted") as PlaylistTask["status"],
+    phase: firstString(value.phase), error: firstString(value.error_message, value.error),
+    workflowId: firstString(value.workflow_id, value.workflowId),
+    completedAt: firstString(value.completed_at, value.completedAt),
+  };
+}
+
+function normalizeBatch(value: unknown): SyncBatchStatus | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = firstString(value.id);
+  if (!id) return undefined;
+  return {
+    id, trigger: (firstString(value.trigger) ?? "manual") as SyncBatchStatus["trigger"],
+    scope: (firstString(value.scope) ?? "all") as SyncBatchStatus["scope"],
+    status: (firstString(value.status) ?? "queued") as SyncBatchStatus["status"],
+    playlistCount: firstNumber(value.playlist_count) ?? 0,
+    successCount: firstNumber(value.success_count) ?? 0,
+    failureCount: firstNumber(value.failure_count) ?? 0,
+    unexecutedCount: firstNumber(value.unexecuted_count) ?? 0,
+    currentPlaylistId: firstString(value.current_playlist_id),
+    createdAt: firstString(value.created_at), completedAt: firstString(value.completed_at),
+    tasks: Array.isArray(value.tasks) ? value.tasks.map(normalizeTask)
+      .filter((task): task is PlaylistTask => Boolean(task)) : [],
   };
 }
 
@@ -222,6 +266,20 @@ function normalizeStatus(value: unknown): SyncStatus {
   const playlistRecord = isRecord(record.playlist) ? record.playlist : undefined;
   const bindingRecord = isRecord(record.binding) ? record.binding : undefined;
   const bindingError = isRecord(bindingRecord?.error) ? bindingRecord.error : undefined;
+  const playlists = Array.isArray(record.playlists) ? record.playlists.flatMap((entry): MonitoredPlaylistStatus[] => {
+    if (!isRecord(entry)) return [];
+    const id = firstString(entry.id);
+    if (!id) return [];
+    return [{ id, name: firstString(entry.name) ?? "歌单", coverUrl: firstString(entry.coverUrl),
+      ownerUid: firstString(entry.ownerUid), ownerName: firstString(entry.ownerName),
+      owned: entry.owned === true, specialType: firstNumber(entry.specialType),
+      listOrder: firstNumber(entry.listOrder) ?? 0, boundAt: firstString(entry.boundAt),
+      totalSongCount: firstNumber(entry.totalSongCount) ?? 0,
+      normalCount: firstNumber(entry.normalCount) ?? 0,
+      missingCount: firstNumber(entry.missingCount) ?? 0,
+      greyCount: firstNumber(entry.greyCount) ?? 0,
+      task: normalizeTask(entry.task), }];
+  }) : [];
   let progress = firstNumber(record.progress, record.percent);
   if (progress !== undefined && progress > 1) progress /= 100;
 
@@ -239,6 +297,13 @@ function normalizeStatus(value: unknown): SyncStatus {
     ),
     error: firstString(record.error, record.lastError, record.message),
     progress,
+    recoveryTotal: firstNumber(record.recoveryTotal),
+    recoveryGreyCount: firstNumber(record.recoveryGreyCount),
+    recoveryMissingCount: firstNumber(record.recoveryMissingCount),
+    playlists,
+    batch: normalizeBatch(record.batch),
+    completedBatch: normalizeBatch(record.completedBatch),
+    manualSyncDisabled: record.manualSyncDisabled === true,
     profile: profileRecord
       ? {
           userId: firstString(profileRecord.userId, profileRecord.id),
@@ -341,9 +406,12 @@ function useDebounced<T>(value: T, delay = 280): T {
 
 function formatDateTime(value?: string): string {
   if (!value) return "尚未同步";
-  const date = new Date(value);
+  const utcValue = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(" ", "T")}Z` : value;
+  const date = new Date(utcValue);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -657,12 +725,28 @@ function VinylHero({ pending, unavailable }: { pending?: number; unavailable: bo
   );
 }
 
+function RecoveryContexts({ contexts }: { contexts: RecoveryItem["contexts"] }) {
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? contexts : contexts.slice(0, 2);
+  return <div className="recovery-contexts">
+    {shown.map((context) => <span className={`context-tag kind-${context.kind}`}
+      key={context.playlistId}>{context.playlistName} · {context.kind === "missing" ? "消失" : "变灰"}</span>)}
+    {!expanded && contexts.length > 2 ? <button type="button"
+      onClick={() => setExpanded(true)}>另有 {contexts.length - 2} 个</button> : null}
+    {expanded && contexts.length > 2 ? <button type="button"
+      onClick={() => setExpanded(false)}>收起</button> : null}
+  </div>;
+}
+
 function RecoveryView({
   status,
   loadState,
   items,
+  total,
   filter,
   setFilter,
+  playlistFilter,
+  setPlaylistFilter,
   query,
   setQuery,
   onComplete,
@@ -676,8 +760,11 @@ function RecoveryView({
   status?: SyncStatus;
   loadState: LoadState;
   items: RecoveryItem[];
+  total?: number;
   filter: RecoveryFilter;
   setFilter: (value: RecoveryFilter) => void;
+  playlistFilter: string;
+  setPlaylistFilter: (value: string) => void;
   query: string;
   setQuery: (value: string) => void;
   onComplete: (item: RecoveryItem) => void;
@@ -690,20 +777,17 @@ function RecoveryView({
 }) {
   const counts = useMemo(
     () => ({
-      missing: status?.missingCount ?? items.filter((item) => item.kind === "missing").length,
-      grey: status?.greyCount ?? items.filter((item) => item.kind === "grey").length,
+      missing: status?.recoveryMissingCount ?? items.filter((item) => item.contexts.some((c) => c.kind === "missing")).length,
+      grey: status?.recoveryGreyCount ?? items.filter((item) => item.contexts.some((c) => c.kind === "grey")).length,
     }),
-    [items, status?.greyCount, status?.missingCount],
+    [items, status?.recoveryGreyCount, status?.recoveryMissingCount],
   );
   const visible = useMemo(
     () =>
-      items.filter(
-        (item) =>
-          (filter === "all" || item.kind === filter) && includesSong(item.song, query),
-      ),
-    [filter, items, query],
+      items.filter((item) => includesSong(item.song, query)),
+    [items, query],
   );
-  const pending = status ? counts.missing + counts.grey : items.length;
+  const pending = status?.recoveryTotal ?? items.length;
 
   return (
     <div className="view-stack view-recovery">
@@ -712,7 +796,7 @@ function RecoveryView({
         eyebrow="RECOVERY QUEUE"
         title="待找回"
         description="这里只收纳已经确认的异常：仍在歌单但不可播放的是变灰，彻底离开歌单的是消失。"
-        right={<span className="heading-count">{loadState === "ready" ? visible.length : "—"} 首</span>}
+        right={<span className="heading-count">{loadState === "ready" ? formatNumber(total ?? visible.length) : "—"} 首</span>}
       />
       <div className="recovery-explainer">
         <span className="explainer-icon">!</span>
@@ -726,11 +810,17 @@ function RecoveryView({
           value={filter}
           onChange={setFilter}
           options={[
-            { value: "all", label: "全部", count: counts.missing + counts.grey },
+            { value: "all", label: "全部", count: pending },
             { value: "grey", label: "变灰", count: counts.grey },
             { value: "missing", label: "消失", count: counts.missing },
           ]}
         />
+        <label className="playlist-filter-label">歌单
+          <select value={playlistFilter} onChange={(event) => setPlaylistFilter(event.target.value)}>
+            <option value="all">全部歌单</option>
+            {status?.playlists?.map((playlist) => <option value={playlist.id} key={playlist.id}>{playlist.name}</option>)}
+          </select>
+        </label>
         <SearchBox value={query} onChange={setQuery} placeholder="搜索歌名、歌手或专辑" />
       </div>
 
@@ -763,7 +853,7 @@ function RecoveryView({
             <span>歌曲</span>
             <span>状态</span>
             <span>最后正常</span>
-            <span>发现时间</span>
+            <span>受影响歌单</span>
             <span />
           </div>
           {visible.map((item) => (
@@ -778,7 +868,7 @@ function RecoveryView({
               </div>
               <div><StatusBadge kind={item.kind} /></div>
               <time>{formatDateTime(item.lastNormalAt)}</time>
-              <time>{formatDateTime(item.song.firstSeenAt)}</time>
+              <RecoveryContexts contexts={item.contexts} />
               <div className="row-actions">
                 <button
                   type="button"
@@ -798,15 +888,11 @@ function RecoveryView({
                 >
                   ⧉ 歌名＋歌手
                 </button>
-                {item.song.neteaseUrl ? (
-                  <a href={item.song.neteaseUrl} target="_blank" rel="noreferrer" aria-label={`在网易云打开 ${item.song.title}`}>
-                    ↗
-                  </a>
-                ) : null}
                 <button
                   type="button"
                   onClick={() => onComplete(item)}
-                  disabled={completingSongId === item.song.id}
+                  disabled={completingSongId === item.song.id || status?.manualSyncDisabled === true}
+                  title={status?.manualSyncDisabled ? "同步或调整歌单结束后再处理" : undefined}
                 >
                   {completingSongId === item.song.id ? "处理中" : "完成"}
                 </button>
@@ -824,6 +910,44 @@ function RecoveryView({
   );
 }
 
+function PlaylistPulse({ playlist, disabled, onSync }: {
+  playlist?: MonitoredPlaylistStatus; disabled: boolean; onSync: () => void;
+}) {
+  const task = playlist?.task;
+  const active = task?.status === "running" || task?.status === "queued";
+  const currentPhase = phaseIndex(task?.phase);
+  const steps = ["验证会话", "读取歌单", "检查状态", "复核异常", "完成同步"];
+  return <>
+    <PageHeading eyebrow="KEEP THE BEAT ALIVE" title={playlist?.name ?? "歌单歌曲"}
+      description={playlist ? `查看 ${playlist.name} 的守护状态，并可单独同步这个歌单。` : "等待选择歌单。"}
+      right={<button type="button" className="primary-button sync-button"
+        disabled={!playlist || disabled} onClick={onSync}><span className={active ? "spin-glyph" : ""}>↻</span>
+        {active ? "正在同步" : "立即同步"}</button>} />
+    <section className={`sync-console state-${task?.status ?? "idle"}`}>
+      <div className="console-head"><div>
+        <span className="console-kicker"><i /> SYSTEM PULSE</span>
+        <h2>{active ? "正在同步中" : task?.status === "failed" ? "上次同步失败" : "守护正常运行"}</h2>
+        <p>{task?.phase ?? (task?.completedAt ? `最近同步于 ${formatDateTime(task.completedAt)}` : "基线已建立，等待第一次扫描")}</p>
+      </div><div className="pulse-core" aria-hidden="true"><i /><span /></div></div>
+      <div className={`sync-progress ${active ? "is-indeterminate" : ""}`}><i /></div>
+      <div className="sync-steps">{steps.map((label, index) => {
+        const complete = task?.status === "success" || (active && currentPhase > index);
+        const highlighted = active && (currentPhase === index || (currentPhase < 0 && index === 0));
+        return <div key={label} className={`${complete ? "is-complete" : ""} ${highlighted ? "is-active" : ""}`}>
+          <span>{complete ? "✓" : String(index + 1).padStart(2, "0")}</span><p>{label}</p>
+        </div>;
+      })}</div>
+      {task?.error && task.status === "failed" ? <div className="sync-error"><strong>这个歌单同步失败</strong><p>{task.error}</p></div> : null}
+    </section>
+    <section className="sync-metrics">
+      <article className="metric-card accent-cyan"><p>{playlist?.name ?? "歌单歌曲"}</p><strong>{formatNumber(playlist?.totalSongCount)}</strong><span>正常、变灰与消失的总和</span></article>
+      <article className="metric-card accent-lime"><p>正常播放</p><strong>{formatNumber(playlist?.normalCount)}</strong><span>本轮确认可以正常播放</span></article>
+      <article className="metric-card accent-violet"><p>变灰</p><strong>{formatNumber(playlist?.greyCount)}</strong><span>仍在歌单但不可播放</span></article>
+      <article className="metric-card accent-red"><p>消失</p><strong>{formatNumber(playlist?.missingCount)}</strong><span>被用户删除或被官方下架</span></article>
+    </section>
+  </>;
+}
+
 function LikesView({
   loadState,
   songs,
@@ -838,6 +962,8 @@ function LikesView({
   onLoadMore,
   onGoSync,
   playlist,
+  syncDisabled,
+  onSyncPlaylist,
 }: {
   loadState: LoadState;
   songs: SongRecord[];
@@ -851,7 +977,9 @@ function LikesView({
   sentinelRef: React.RefObject<HTMLDivElement | null>;
   onLoadMore: () => void;
   onGoSync: () => void;
-  playlist?: SyncStatus["playlist"];
+  playlist?: MonitoredPlaylistStatus;
+  syncDisabled: boolean;
+  onSyncPlaylist: () => void;
 }) {
   const filtered = useMemo(
     () =>
@@ -861,29 +989,7 @@ function LikesView({
 
   return (
     <div className="view-stack view-likes">
-      <PageHeading
-        eyebrow="THE LIVING ARCHIVE"
-        title="歌单歌曲"
-        description="当前绑定歌单的持续镜像。搜索与筛选基于真实同步数据，长列表会按需增量呈现。"
-        right={
-          <div className="library-total">
-            <strong>{formatNumber(total ?? songs.length)}</strong>
-            <span>TRACKS ARCHIVED</span>
-          </div>
-        }
-      />
-      <section className="library-marquee glass-panel">
-        <div className="mini-disc" aria-hidden="true"><i /></div>
-        <div>
-          <p className="micro-label">PLAYLIST / {playlist?.id ?? "尚未绑定"}</p>
-          <h2>{playlist?.name ?? "等待选择歌单"}</h2>
-          {playlist && !playlist.owned ? <p>收藏自 {playlist.ownerName || "其他用户"}；对方修改歌单也会被记录为变化。</p> : null}
-          <p>每一次新增都会进入快照；每一次异常都有据可查。</p>
-        </div>
-        <div className="marquee-wave" aria-hidden="true">
-          {Array.from({ length: 32 }).map((_, index) => <i key={index} />)}
-        </div>
-      </section>
+      <PlaylistPulse playlist={playlist} disabled={syncDisabled} onSync={onSyncPlaylist} />
       <div className="toolbar glass-panel">
         <p className="toolbar-note">正常歌曲保持安静，异常歌曲会标出“已变灰”或“已消失”。</p>
         <div className="library-tools">
@@ -984,7 +1090,7 @@ function SyncView({
   onRebind: () => void;
 }) {
   const currentPhase = phaseIndex(status?.phase);
-  const isActive = status?.state === "running" || status?.state === "queued";
+  const isActive = status?.batch?.status === "running" || status?.batch?.status === "queued";
   const steps = ["验证会话", "读取歌单", "检查状态", "复核异常", "完成同步"];
   const sessionGood = status?.sessionStatus === "valid";
   const configured = status?.setupState === "ready" && Boolean(status.playlist);
@@ -1000,7 +1106,7 @@ function SyncView({
         title="同步状态"
         description="查看每日守护是否正常、网易云登录态是否有效，并在需要时手动发起同步。"
         right={
-          <button type="button" className="primary-button sync-button" disabled={!configured || !sessionGood || syncing || isActive} onClick={onSync}>
+          <button type="button" className="primary-button sync-button" disabled={!configured || !sessionGood || syncing || status?.manualSyncDisabled || isActive} onClick={onSync}>
             <span className={syncing || isActive ? "spin-glyph" : ""}>↻</span>
             {syncing || isActive ? "正在同步" : "立即同步"}
           </button>
@@ -1031,8 +1137,11 @@ function SyncView({
             <div className="console-head">
               <div>
                 <span className="console-kicker"><i /> SYSTEM PULSE</span>
-                <h2>{isActive ? "正在同步中" : syncLabel(status)}</h2>
-                <p>{status.phase || (status.lastSuccessAt ? `最近成功于 ${formatDateTime(status.lastSuccessAt)}` : "准备建立第一张歌单快照")}</p>
+                <h2>{isActive ? "正在依次同步歌单" : syncLabel(status)}</h2>
+                <p>{status.batch?.currentPlaylistId
+                  ? `当前歌单：${status.playlists?.find((item) => item.id === status.batch?.currentPlaylistId)?.name ?? status.batch.currentPlaylistId}`
+                  : status.batch ? `已完成 ${status.batch.successCount + status.batch.failureCount} / ${status.batch.playlistCount} 个歌单`
+                    : "等待全量扫描"}</p>
               </div>
               <div className="pulse-core" aria-hidden="true"><i /><span /></div>
             </div>
@@ -1052,20 +1161,14 @@ function SyncView({
             {status.error ? <div className="sync-error"><strong>{status.state === "reauth_required" ? "需要重新授权网易云" : "同步没有完成"}</strong><p>{status.error}</p></div> : null}
           </section>
 
-          <section className="sync-metrics">
-            <article className="metric-card accent-cyan">
-              <p>{status.playlist?.name ?? "歌单歌曲"}</p><strong>{formatNumber(status.totalSongCount)}</strong><span>正常、变灰与消失的总和</span>
-            </article>
-            <article className="metric-card accent-lime">
-              <p>正常播放</p><strong>{formatNumber(status.normalCount)}</strong><span>本轮确认可以正常播放</span>
-            </article>
-            <article className="metric-card accent-violet">
-              <p>变灰</p><strong>{formatNumber(status.greyCount)}</strong><span>仍在歌单但不可播放</span>
-            </article>
-            <article className="metric-card accent-red">
-              <p>消失</p><strong>{formatNumber(status.missingCount)}</strong><span>被用户删除或被官方下架</span>
-            </article>
-          </section>
+          {status.batch ? <section className="batch-results glass-panel">
+            <h3>{status.batch.trigger === "scheduled" ? "每日自动同步" : "手动同步"} · {status.batch.status === "running" ? "进行中" : status.batch.status === "queued" ? "等待执行" : "已结束"}</h3>
+            <p>成功 {status.batch.successCount} · 失败 {status.batch.failureCount} · {isActive ? "待执行" : "未执行"} {status.batch.unexecutedCount}</p>
+            <div>{status.batch.tasks.map((task) => <article key={task.playlistId} className={`batch-task state-${task.status}`}>
+              <strong>{task.playlistName}</strong><span>{task.status === "success" ? "成功" : task.status === "failed" ? "失败" : task.status === "running" ? "正在同步" : isActive ? "待执行" : "未执行"}</span>
+              {task.error ? <small>{task.error}</small> : null}
+            </article>)}</div>
+          </section> : null}
 
           <section className="connection-grid">
             <article className="connection-card glass-panel">
@@ -1080,7 +1183,7 @@ function SyncView({
                 {configured ? (
                   <>
                     <button type="button" className="quiet-button" onClick={onReauthorize}>重新授权</button>
-                    <button type="button" disabled={!sessionGood} onClick={onRebind}>重绑歌单</button>
+                    <button type="button" disabled={!sessionGood} onClick={onRebind}>管理监控歌单</button>
                   </>
                 ) : (
                   <button type="button" onClick={onLogin}>连接网易云</button>
@@ -1154,46 +1257,65 @@ function PlaylistModal({
   playlists,
   loading,
   binding,
-  onSelect,
+  selectedIds,
+  onToggle,
+  onSubmit,
+  onFresh,
   onClose,
 }: {
   playlists: PlaylistChoice[];
   loading: boolean;
   binding: boolean;
-  onSelect: (playlist: PlaylistChoice) => void;
+  selectedIds: string[];
+  onToggle: (id: string) => void;
+  onSubmit: () => void;
+  onFresh?: () => void;
   onClose: () => void;
 }) {
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal-card playlist-picker" role="dialog" aria-modal="true" aria-labelledby="playlist-title">
         <button type="button" className="modal-close" onClick={onClose} aria-label="关闭">×</button>
-        <p className="micro-label">CHOOSE ONE PLAYLIST</p>
-        <h2 id="playlist-title">选择要守护的歌单</h2>
-        <p className="qr-intro">只长期保存最终选择。收藏的他人歌单会标出所有者，对方修改也会被记录为变化。</p>
+        <p className="micro-label">MONITOR PLAYLISTS</p>
+        <h2 id="playlist-title">管理监控歌单</h2>
+        <p className="qr-intro">选择 1–20 个可访问的歌单；新歌单会先建立完整基线，全部成功后才更新监控集合。</p>
         {loading && playlists.length === 0 ? <div className="qr-loader"><i /><span>♪</span></div> : null}
         {!loading && playlists.length === 0 ? <p className="playlist-picker-empty">没有找到可建立基线的非空歌单。</p> : null}
         <div className="playlist-choice-list">
           {playlists.map((playlist) => (
-            <button type="button" key={playlist.id} disabled={binding || playlist.trackCount === 0} onClick={() => onSelect(playlist)}>
+            <label key={playlist.id} className={`playlist-choice ${selectedIds.includes(playlist.id) ? "is-selected" : ""}`}>
+              <input type="checkbox" checked={selectedIds.includes(playlist.id)}
+                disabled={binding || (playlist.trackCount === 0 && !selectedIds.includes(playlist.id))}
+                onChange={() => onToggle(playlist.id)} />
               {playlist.coverUrl ? (
                 // Playlist covers are remote user data; the Worker image route is not guaranteed for every host.
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={playlist.coverUrl} alt="" />
               ) : <span className="playlist-choice-cover">♪</span>}
               <span><strong>{playlist.name}</strong><small>{playlist.owned ? "我的歌单" : `收藏自 ${playlist.ownerName}`}{playlist.private ? " · 私密" : ""} · {playlist.trackCount} 首</small></span>
-              <i>→</i>
-            </button>
+              <i>{selectedIds.includes(playlist.id) ? "✓" : "+"}</i>
+            </label>
           ))}
+        </div>
+        <div className="modal-actions"><span>已选 {selectedIds.length} / 20</span>
+          {onFresh ? <button type="button" className="quiet-button"
+            disabled={binding || loading || selectedIds.length < 1 || selectedIds.length > 20 ||
+              selectedIds.some((id) => (playlists.find((playlist) => playlist.id === id)?.trackCount ?? 0) < 1)}
+            onClick={onFresh}>从网易云重建基线</button> : null}
+          <button type="button" className="primary-button" disabled={binding || loading || selectedIds.length < 1 || selectedIds.length > 20} onClick={onSubmit}>
+            {binding ? "正在提交" : "保存监控歌单"}</button>
         </div>
       </section>
     </div>
   );
 }
 
-function RebindConfirmModal({
+function RemovalConfirmModal({
+  names,
   onClose,
   onConfirm,
 }: {
+  names: string[];
   onClose: () => void;
   onConfirm: () => void;
 }) {
@@ -1201,31 +1323,54 @@ function RebindConfirmModal({
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal-card rebind-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="rebind-confirm-title" aria-describedby="rebind-confirm-description">
         <button type="button" className="modal-close" onClick={onClose} aria-label="关闭">×</button>
-        <p className="micro-label">PLAYLIST REBIND</p>
-        <h2 id="rebind-confirm-title">确认重绑歌单？</h2>
-        <p id="rebind-confirm-description" className="rebind-confirm-warning">新歌单建立完成后，当前歌单的活动历史将被清除，且无法恢复。</p>
+        <p className="micro-label">REMOVE MONITORING</p>
+        <h2 id="rebind-confirm-title">确认取消监控？</h2>
+        <p id="rebind-confirm-description" className="rebind-confirm-warning">将永久删除这些歌单的状态和历史：{names.join("、")}。其他已选歌单不会受影响。</p>
         <div className="modal-actions rebind-confirm-actions">
           <button type="button" className="quiet-button" onClick={onClose}>取消</button>
-          <button type="button" className="primary-button" onClick={onConfirm}>确认重绑</button>
+          <button type="button" className="primary-button" onClick={onConfirm}>确认删除并保存</button>
         </div>
       </section>
     </div>
   );
 }
 
+function FreshBaselineConfirmModal({ onClose, onConfirm }: {
+  onClose: () => void; onConfirm: () => void;
+}) {
+  return <div className="modal-backdrop" role="presentation"
+    onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <section className="modal-card rebind-confirm-modal" role="dialog" aria-modal="true"
+      aria-label="确认重新建立基线">
+      <button type="button" className="modal-close" onClick={onClose} aria-label="关闭">×</button>
+      <p className="micro-label">FRESH NETEASE BASELINE</p>
+      <h2>从网易云重新建立基线？</h2>
+      <p className="rebind-confirm-warning">会完整读取并复核全部已选歌单；只有全部成功后，才一次性清空旧歌曲状态、待找回和旧同步记录并写入新快照。未选歌单也会取消监控。读取失败时当前数据不变。</p>
+      <div className="modal-actions rebind-confirm-actions">
+        <button type="button" className="quiet-button" onClick={onClose}>取消</button>
+        <button type="button" className="primary-button" onClick={onConfirm}>确认重建</button>
+      </div>
+    </section>
+  </div>;
+}
+
 export function MusicVault() {
   const [view, setView] = useState<ViewId>("recovery");
   const [motion, setMotion] = useState<MotionMode>("immersive");
   const [recoveryItems, setRecoveryItems] = useState<RecoveryItem[]>([]);
+  const [recoveryTotal, setRecoveryTotal] = useState<number>();
   const [recoveryCursor, setRecoveryCursor] = useState<string>();
   const [loadingMoreRecovery, setLoadingMoreRecovery] = useState(false);
   const [recoveryState, setRecoveryState] = useState<LoadState>("loading");
   const [recoveryFilter, setRecoveryFilter] = useState<RecoveryFilter>("all");
+  const [recoveryPlaylistFilter, setRecoveryPlaylistFilter] = useState("all");
   const [recoveryQuery, setRecoveryQuery] = useState("");
   const [songs, setSongs] = useState<SongRecord[]>([]);
   const [likesState, setLikesState] = useState<LoadState>("loading");
   const [libraryView, setLibraryView] = useState<LibraryViewMode>("list");
   const [likesQuery, setLikesQuery] = useState("");
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string>();
+  const [mobilePlaylistOpen, setMobilePlaylistOpen] = useState(false);
   const [likesTotal, setLikesTotal] = useState<number>();
   const [likesCursor, setLikesCursor] = useState<string>();
   const [loadingMore, setLoadingMore] = useState(false);
@@ -1237,18 +1382,23 @@ export function MusicVault() {
   const [qrOpen, setQrOpen] = useState(false);
   const [qrLogin, setQrLogin] = useState<QrLogin>();
   const [qrMode, setQrMode] = useState<"initial" | "reauthorize">("initial");
-  const [rebindConfirmOpen, setRebindConfirmOpen] = useState(false);
+  const [removedNames, setRemovedNames] = useState<string[]>([]);
+  const [freshConfirm, setFreshConfirm] = useState(false);
   const [playlistOpen, setPlaylistOpen] = useState(false);
   const [playlistLoading, setPlaylistLoading] = useState(false);
   const [playlistBinding, setPlaylistBinding] = useState(false);
   const [playlistChoices, setPlaylistChoices] = useState<PlaylistChoice[]>([]);
+  const [selectedPlaylistIds, setSelectedPlaylistIds] = useState<string[]>([]);
   const [playlistFlowId, setPlaylistFlowId] = useState<string>();
   const [toast, setToast] = useState<Toast>();
+  const [batchSummary, setBatchSummary] = useState<SyncBatchStatus>();
   const [backgrounded, setBackgrounded] = useState(false);
   const appRef = useRef<HTMLDivElement>(null);
   const likesSentinelRef = useRef<HTMLDivElement>(null);
   const recoveryRequest = useRef(0);
   const likesRequest = useRef(0);
+  const completedBatchIds = useRef(new Set<string>());
+  const initialStatusLoaded = useRef(false);
   const recoverySearch = useDebounced(recoveryQuery);
   const likesSearch = useDebounced(likesQuery);
 
@@ -1288,21 +1438,24 @@ export function MusicVault() {
   }, [toast]);
 
   useEffect(() => {
-    if (!qrOpen && !rebindConfirmOpen && !playlistOpen) return;
+    if (!qrOpen && !removedNames.length && !freshConfirm && !playlistOpen && !batchSummary && !mobilePlaylistOpen) return;
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setQrOpen(false);
-      setRebindConfirmOpen(false);
+      setRemovedNames([]);
+      setFreshConfirm(false);
       setPlaylistOpen(false);
+      setBatchSummary(undefined);
+      setMobilePlaylistOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => {
       document.body.style.overflow = previous;
       window.removeEventListener("keydown", onKey);
     };
-  }, [playlistOpen, qrOpen, rebindConfirmOpen]);
+  }, [playlistOpen, qrOpen, removedNames, freshConfirm, batchSummary, mobilePlaylistOpen]);
 
   const loadRecovery = useCallback(async (cursor?: string, append = false) => {
     const sequence = append ? recoveryRequest.current : ++recoveryRequest.current;
@@ -1310,6 +1463,7 @@ export function MusicVault() {
     else setRecoveryState("loading");
     const params = new URLSearchParams({ limit: "100" });
     if (recoveryFilter !== "all") params.set("type", recoveryFilter);
+    if (recoveryPlaylistFilter !== "all") params.set("playlistId", recoveryPlaylistFilter);
     if (recoverySearch.trim()) params.set("query", recoverySearch.trim());
     if (cursor) params.set("cursor", cursor);
     try {
@@ -1322,12 +1476,14 @@ export function MusicVault() {
         return [...current, ...page.items.filter((item) => !known.has(item.song.id))];
       });
       setRecoveryCursor(page.nextCursor);
+      setRecoveryTotal(page.total);
       setRecoveryState("ready");
     } catch {
       if (sequence !== recoveryRequest.current) return;
       if (!append) {
         setRecoveryItems([]);
         setRecoveryCursor(undefined);
+        setRecoveryTotal(undefined);
         setRecoveryState("unavailable");
       } else {
         notify("更多待找回记录暂时没有载入，请稍后再试。", "bad");
@@ -1335,13 +1491,15 @@ export function MusicVault() {
     } finally {
       setLoadingMoreRecovery(false);
     }
-  }, [notify, recoveryFilter, recoverySearch]);
+  }, [notify, recoveryFilter, recoveryPlaylistFilter, recoverySearch]);
 
   const loadLikes = useCallback(async (cursor?: string, append = false) => {
+    if (!selectedPlaylistId) return;
     const sequence = append ? likesRequest.current : ++likesRequest.current;
     if (append) setLoadingMore(true);
     else setLikesState("loading");
     const params = new URLSearchParams({ limit: String(LIKES_PAGE_SIZE) });
+    params.set("playlistId", selectedPlaylistId);
     if (likesSearch.trim()) params.set("query", likesSearch.trim());
     if (cursor) params.set("cursor", cursor);
     try {
@@ -1357,6 +1515,7 @@ export function MusicVault() {
       setLikesTotal(page.total);
       setLikesState("ready");
     } catch {
+      if (sequence !== likesRequest.current) return;
       if (!append) {
         setSongs([]);
         setLikesState("unavailable");
@@ -1366,13 +1525,23 @@ export function MusicVault() {
     } finally {
       setLoadingMore(false);
     }
-  }, [likesSearch, notify]);
+  }, [likesSearch, notify, selectedPlaylistId]);
 
   const loadStatus = useCallback(async (showLoading = false) => {
     if (showLoading) setStatusState("loading");
     try {
       const raw = await requestJson([{ url: "/api/sync/status" }]);
-      setStatus(normalizeStatus(raw));
+      const next = normalizeStatus(raw);
+      setStatus(next);
+      setSelectedPlaylistId((current) => next.playlists?.some((p) => p.id === current)
+        ? current : next.playlist?.id);
+      const completed = next.completedBatch;
+      if (completed) {
+        if (initialStatusLoaded.current && !completedBatchIds.current.has(completed.id)
+          && completed.scope === "all") setBatchSummary(completed);
+        completedBatchIds.current.add(completed.id);
+      }
+      initialStatusLoaded.current = true;
       setStatusError(undefined);
       setStatusState("ready");
     } catch (error) {
@@ -1397,19 +1566,24 @@ export function MusicVault() {
 
   const refreshedForSyncAt = useRef<string | undefined>(undefined);
   useEffect(() => {
-    const completedAt = status?.lastSuccessAt;
-    if (!completedAt || refreshedForSyncAt.current === completedAt) return;
-    refreshedForSyncAt.current = completedAt;
+    const refreshKey = `${status?.batch?.completedAt ?? ""}:${status?.bindingVersion ?? ""}`;
+    if (refreshKey === ":" || refreshedForSyncAt.current === refreshKey) return;
+    refreshedForSyncAt.current = refreshKey;
     void loadLikes(undefined, false);
     void loadRecovery(undefined, false);
-  }, [loadLikes, loadRecovery, status?.lastSuccessAt]);
+  }, [loadLikes, loadRecovery, status?.batch?.completedAt, status?.bindingVersion]);
 
   useEffect(() => {
     const bindingActive = status?.binding?.state === "preparing" || status?.binding?.state === "running";
     if (status?.state !== "running" && status?.state !== "queued" && !bindingActive) return;
-    const timer = window.setInterval(() => void loadStatus(false), 800);
+    const timer = window.setInterval(() => void loadStatus(false), 2000);
     return () => window.clearInterval(timer);
   }, [loadStatus, status?.binding?.state, status?.state]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => void loadStatus(false), 30000);
+    return () => window.clearInterval(timer);
+  }, [loadStatus]);
 
   const loadMoreLikes = useCallback(() => {
     if (!likesCursor || loadingMore) return;
@@ -1455,7 +1629,6 @@ export function MusicVault() {
         notify("歌曲已恢复正常", "info");
       } else {
         setRecoveryItems((current) => current.filter((row) => row.song.id !== item.song.id));
-        setSongs((current) => current.filter((song) => song.id !== item.song.id));
         notify("已处理", "good");
       }
       void Promise.all([
@@ -1486,11 +1659,12 @@ export function MusicVault() {
     }
   }, [notify]);
 
-  const handleSync = async () => {
+  const handleSync = async (playlistId?: string) => {
     if (syncing) return;
     setSyncing(true);
     try {
-      await requestJson([{ url: "/api/sync", init: { method: "POST" } }]);
+      await requestJson([{ url: "/api/sync", init: { method: "POST",
+        body: JSON.stringify(playlistId ? { playlistId } : {}) } }]);
       setStatus((current) => current ? { ...current, state: "queued", phase: "同步任务已进入队列" } : current);
       notify("同步任务已经开始，页面会自动更新进度。", "good");
       window.setTimeout(() => void loadStatus(false), 900);
@@ -1513,6 +1687,7 @@ export function MusicVault() {
     setPlaylistOpen(true);
     setPlaylistLoading(true);
     setPlaylistChoices([]);
+    setSelectedPlaylistIds([]);
     setPlaylistFlowId(flowId);
     try {
       const items = new Map<string, PlaylistChoice>();
@@ -1541,6 +1716,7 @@ export function MusicVault() {
             ownerName: firstString(value.ownerName) ?? "未知所有者",
             owned: value.owned === true,
             private: value.private === true,
+            specialType: firstNumber(value.specialType),
           });
           addedOnThisPage += 1;
         }
@@ -1551,14 +1727,18 @@ export function MusicVault() {
         if (nextOffset === undefined || nextOffset <= offset) break;
         offset = nextOffset;
       }
-      setPlaylistChoices([...items.values()]);
+      const choices = [...items.values()];
+      setPlaylistChoices(choices);
+      const retained = flowId ? [] : status?.playlists?.map((item) => item.id) ?? [];
+      setSelectedPlaylistIds(retained.length ? retained.filter((id) => items.has(id))
+        : choices.find((choice) => choice.trackCount > 0) ? [choices.find((choice) => choice.trackCount > 0)!.id] : []);
     } catch (error) {
       setPlaylistChoices([]);
       notify(error instanceof Error ? error.message : "歌单列表读取失败。", "bad");
     } finally {
       setPlaylistLoading(false);
     }
-  }, [notify]);
+  }, [notify, status]);
 
   const createQr = useCallback(async (mode: "initial" | "reauthorize" = qrMode) => {
     setQrMode(mode);
@@ -1603,11 +1783,6 @@ export function MusicVault() {
     setPlaylistOpen(false);
   };
 
-  const confirmRebind = () => {
-    setRebindConfirmOpen(false);
-    void loadPlaylists();
-  };
-
   useEffect(() => {
     if (!qrOpen || !qrLogin?.flowId || !["waiting_scan", "waiting_confirm"].includes(qrLogin.state)) return;
     let checking = false;
@@ -1640,15 +1815,29 @@ export function MusicVault() {
     return () => window.clearInterval(timer);
   }, [loadPlaylists, loadStatus, notify, qrLogin?.flowId, qrLogin?.state, qrOpen]);
 
-  const bindPlaylist = async (playlist: PlaylistChoice) => {
+  const togglePlaylistChoice = (id: string) => setSelectedPlaylistIds((current) =>
+    current.includes(id) ? current.filter((item) => item !== id) : current.length >= 20 ? current : [...current, id]);
+
+  const bindPlaylists = async (confirmedRemoval = false, freshBaseline = false) => {
+    const removed = (status?.playlists ?? []).filter((playlist) =>
+      Boolean(playlistFlowId) || !selectedPlaylistIds.includes(playlist.id));
+    if (removed.length && !confirmedRemoval && !freshBaseline) {
+      setRemovedNames(removed.map((playlist) => playlist.name));
+      return;
+    }
+    setRemovedNames([]);
+    setFreshConfirm(false);
     setPlaylistBinding(true);
     try {
       await requestJson([{
         url: "/api/playlist-binding",
-        init: { method: "POST", body: JSON.stringify({ flowId: playlistFlowId, playlistId: playlist.id }) },
+        init: { method: "POST", body: JSON.stringify({ flowId: playlistFlowId,
+          playlistIds: selectedPlaylistIds, confirmedRemoval,
+          freshBaseline, confirmedFreshBaseline: freshBaseline }) },
       }]);
       setPlaylistOpen(false);
-      notify("正在完整读取新歌单；完成前旧配置继续有效。", "good");
+      notify(freshBaseline ? "正在从网易云完整重建全部已选歌单基线；成功后替换旧状态。"
+        : "正在完整读取新增歌单；全部成功后才会更新选择。", "good");
       void loadStatus(false);
     } catch (error) {
       notify(error instanceof Error ? error.message : "歌单基线任务没有启动。", "bad");
@@ -1657,13 +1846,25 @@ export function MusicVault() {
     }
   };
 
+  const switchPlaylist = (id: string) => {
+    if (id === selectedPlaylistId) { setView("likes"); setMobilePlaylistOpen(false); return; }
+    likesRequest.current += 1;
+    setSongs([]);
+    setLikesCursor(undefined);
+    setLikesTotal(undefined);
+    setLikesQuery("");
+    setLoadingMore(false);
+    setSelectedPlaylistId(id);
+    setView("likes");
+    setMobilePlaylistOpen(false);
+  };
+
   const pendingCount = status
-    ? status.missingCount !== undefined || status.greyCount !== undefined
-      ? (status.missingCount ?? 0) + (status.greyCount ?? 0)
-      : undefined
+    ? status.recoveryTotal
     : recoveryState === "ready"
       ? recoveryItems.length
       : undefined;
+  const currentPlaylist = status?.playlists?.find((item) => item.id === selectedPlaylistId);
 
   return (
     <div
@@ -1680,14 +1881,19 @@ export function MusicVault() {
           <div><strong>NEEDLE DROP</strong><span>拾针 · 音乐防丢台</span></div>
         </div>
         <nav aria-label="主导航">
-          {navItems.map((item) => (
+          {navItems.map((item) => <Fragment key={item.id}>
             <button type="button" key={item.id} className={view === item.id ? "is-active" : ""} onClick={() => setView(item.id)} aria-current={view === item.id ? "page" : undefined}>
               <span className="nav-glyph" aria-hidden="true">{item.glyph}</span>
               <span><small>{item.eyebrow}</small>{item.label}</span>
               {item.id === "recovery" && pendingCount ? <b>{pendingCount}</b> : null}
               <i aria-hidden="true" />
             </button>
-          ))}
+            {item.id === "likes" ? <div className="sidebar-playlists">
+              {status?.playlists?.map((playlist) => <button type="button" key={playlist.id}
+                className={selectedPlaylistId === playlist.id && view === "likes" ? "is-active" : ""}
+                onClick={() => switchPlaylist(playlist.id)}>{playlist.name}<small>{playlist.totalSongCount} 首</small></button>)}
+            </div> : null}
+          </Fragment>)}
         </nav>
         <div className="sidebar-spacer" />
         <div className="motion-control">
@@ -1698,7 +1904,7 @@ export function MusicVault() {
             ))}
           </div>
         </div>
-        <div className="playlist-stamp"><span>PLAYLIST</span><strong>{status?.playlist?.id ?? "未绑定"}</strong></div>
+        <div className="playlist-stamp"><span>PLAYLISTS</span><strong>{status?.playlists?.length ?? 0} 个监控中</strong></div>
       </aside>
 
       <main>
@@ -1720,8 +1926,11 @@ export function MusicVault() {
               status={status}
               loadState={recoveryState}
               items={recoveryItems}
+              total={recoveryTotal}
               filter={recoveryFilter}
               setFilter={setRecoveryFilter}
+              playlistFilter={recoveryPlaylistFilter}
+              setPlaylistFilter={setRecoveryPlaylistFilter}
               query={recoveryQuery}
               setQuery={setRecoveryQuery}
               onComplete={handleComplete}
@@ -1737,7 +1946,7 @@ export function MusicVault() {
             <LikesView
               loadState={likesState}
               songs={songs}
-              total={likesTotal ?? status?.totalSongCount}
+              total={likesTotal ?? currentPlaylist?.totalSongCount}
               viewMode={libraryView}
               setViewMode={setLibraryView}
               query={likesQuery}
@@ -1747,7 +1956,9 @@ export function MusicVault() {
               sentinelRef={likesSentinelRef}
               onLoadMore={loadMoreLikes}
               onGoSync={() => setView("sync")}
-              playlist={status?.playlist}
+              playlist={currentPlaylist}
+              syncDisabled={status?.manualSyncDisabled === true || status?.sessionStatus !== "valid" || syncing}
+              onSyncPlaylist={() => void handleSync(selectedPlaylistId)}
             />
           ) : null}
           {view === "sync" ? (
@@ -1756,10 +1967,10 @@ export function MusicVault() {
               loadState={statusState}
               loadError={statusError}
               syncing={syncing}
-              onSync={handleSync}
+              onSync={() => void handleSync()}
               onLogin={() => openQr("initial")}
               onReauthorize={() => openQr("reauthorize")}
-              onRebind={() => setRebindConfirmOpen(true)}
+              onRebind={() => void loadPlaylists()}
             />
           ) : null}
         </div>
@@ -1767,7 +1978,9 @@ export function MusicVault() {
 
       <nav className="mobile-nav" aria-label="移动端主导航">
         {navItems.map((item) => (
-          <button type="button" key={item.id} className={view === item.id ? "is-active" : ""} onClick={() => setView(item.id)} aria-current={view === item.id ? "page" : undefined}>
+          <button type="button" key={item.id} className={view === item.id ? "is-active" : ""} onClick={() => {
+            setView(item.id); if (item.id === "likes") setMobilePlaylistOpen(true);
+          }} aria-current={view === item.id ? "page" : undefined}>
             <span aria-hidden="true">{item.glyph}</span><small>{item.label}</small>
             {item.id === "recovery" && pendingCount ? <b>{pendingCount}</b> : null}
           </button>
@@ -1777,16 +1990,41 @@ export function MusicVault() {
       {qrOpen ? <QrModal login={qrLogin} onClose={closeQr} onRefresh={() => {
         void cancelFlow(qrLogin?.flowId).finally(() => createQr());
       }} /> : null}
-      {rebindConfirmOpen ? <RebindConfirmModal onClose={() => setRebindConfirmOpen(false)} onConfirm={confirmRebind} /> : null}
       {playlistOpen ? (
         <PlaylistModal
           playlists={playlistChoices}
           loading={playlistLoading}
           binding={playlistBinding}
-          onSelect={(playlist) => void bindPlaylist(playlist)}
+          selectedIds={selectedPlaylistIds}
+          onToggle={togglePlaylistChoice}
+          onSubmit={() => void bindPlaylists()}
+          onFresh={!playlistFlowId && (status?.playlists?.length ?? 0) > 0
+            ? () => setFreshConfirm(true) : undefined}
           onClose={closePlaylistPicker}
         />
       ) : null}
+      {removedNames.length ? <RemovalConfirmModal names={removedNames}
+        onClose={() => setRemovedNames([])} onConfirm={() => void bindPlaylists(true)} /> : null}
+      {freshConfirm ? <FreshBaselineConfirmModal onClose={() => setFreshConfirm(false)}
+        onConfirm={() => void bindPlaylists(true, true)} /> : null}
+      {mobilePlaylistOpen ? <div className="modal-backdrop" role="presentation"
+        onMouseDown={(event) => event.target === event.currentTarget && setMobilePlaylistOpen(false)}>
+        <section className="modal-card mobile-playlist-drawer" role="dialog" aria-modal="true" aria-label="选择歌单">
+          <button type="button" className="modal-close" onClick={() => setMobilePlaylistOpen(false)} aria-label="关闭">×</button>
+          <h2>歌单歌曲</h2>{status?.playlists?.map((playlist) => <button type="button" key={playlist.id}
+            className={playlist.id === selectedPlaylistId ? "is-active" : ""}
+            onClick={() => switchPlaylist(playlist.id)}>{playlist.name}<span>{playlist.totalSongCount} 首</span></button>)}
+        </section>
+      </div> : null}
+      {batchSummary ? <div className="modal-backdrop" role="presentation"
+        onMouseDown={(event) => event.target === event.currentTarget && setBatchSummary(undefined)}>
+        <section className="modal-card batch-summary-modal" role="dialog" aria-modal="true" aria-label="同步结果">
+          <button type="button" className="modal-close" onClick={() => setBatchSummary(undefined)} aria-label="关闭">×</button>
+          <p className="micro-label">SYNC SUMMARY</p><h2>{batchSummary.status === "success" ? "全部歌单同步完成" : "歌单同步已结束"}</h2>
+          <p>成功 {batchSummary.successCount} · 失败 {batchSummary.failureCount} · 未执行 {batchSummary.unexecutedCount}</p>
+          <button type="button" className="primary-button" onClick={() => { setBatchSummary(undefined); setView("sync"); }}>查看同步状态</button>
+        </section>
+      </div> : null}
       {toast ? <div className={`toast toast-${toast.tone}`} role="status" aria-live="polite"><i />{toast.message}</div> : null}
     </div>
   );

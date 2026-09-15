@@ -1,6 +1,6 @@
 # 安全、隐私与漏洞报告
 
-“拾针”采用“一名用户部署一套 Cloudflare 实例”的模式。每个实例只绑定一个 Cloudflare Access 用户、一个网易云账号和一个歌单；项目维护者不提供集中服务器，也不会代替部署者持有账号数据。
+“拾针”采用“一名用户部署一套 Cloudflare 实例”的模式。每个实例只绑定一个 Cloudflare Access 用户和一个网易云账号，可监控 1–20 个歌单；项目维护者不提供集中服务器，也不会代替部署者持有账号数据。
 
 ## 数据保存边界
 
@@ -9,10 +9,10 @@
 | 网易登录 Cookie | D1 `netease_sessions` | Worker 使用 AES-256-GCM 和随机 nonce 加密后保存 | 否 |
 | Cookie 解密密钥 | Cloudflare Worker Secret `SESSION_ENCRYPTION_KEY` | 与 D1 分离，Cloudflare 控制台和 Wrangler 不回显其值 | 否 |
 | 网易 UID、昵称、头像 | D1 `instance_config` | D1 持久化；应用层按普通账号元数据保存 | 否 |
-| 当前歌单 ID、名称、封面和所有者 | D1 `instance_config` | D1 持久化 | 否 |
-| 歌曲、异常状态和同步历史 | D1 `songs`、`managed_songs`、`sync_runs` | D1 持久化 | 否 |
+| 监控歌单 ID、名称、封面和所有者 | D1 `monitored_playlists` | D1 持久化 | 否 |
+| 歌曲、逐歌单状态和同步批次 | D1 `songs`、`playlist_song_states`、`sync_batches`、`sync_playlist_tasks` | D1 持久化，批次保留最近 30 天 | 否 |
 | 二维码 challenge | D1 `netease_auth_flows` | AES-256-GCM 密文，登录完成、取消或过期后清理 | 否 |
-| 待确认会话与重绑进度 | D1 `netease_sessions`、`pending_playlist_bindings` | 会话加密；目标账号和歌单元数据按普通字段保存 | 否 |
+| 待确认会话与歌单集合变更进度 | D1 `netease_sessions`、`pending_playlist_sets`、`pending_playlist_baselines` | 会话加密；临时基线仅在全部成功后原子启用 | 否 |
 | Access 允许邮箱、团队域名和 Audience | Cloudflare Worker 变量及本地 `wrangler.private.jsonc` | 私有实例配置 | 否 |
 | D1 UUID | Cloudflare binding 及本地 `wrangler.private.jsonc` | 私有实例标识 | 否 |
 | 未选中的歌单列表 | 登录后的受保护 API 响应 | 只短暂传输，不长期保存 | 否 |
@@ -76,11 +76,11 @@ Deploy to Cloudflare 会为新实例自动配置 D1 binding，并把实际 bindi
 旧网易会话密文无法恢复，但歌曲基线和历史不需要删除：
 
 1. 先导出并备份远程 D1；
-2. 不要删除 `instance_config`、`songs`、`managed_songs` 或 `sync_runs`；
-3. 清理 `pending_playlist_bindings`、`netease_auth_flows` 和 `netease_sessions` 中无法解密的会话流程；
+2. 不要删除 `instance_config`、`monitored_playlists`、`songs`、`playlist_song_states`、`sync_batches` 或 `sync_playlist_tasks`；
+3. 清理 `pending_playlist_sets`、`netease_auth_flows` 和 `netease_sessions` 中无法解密的会话流程；
 4. 生成新的 32 字节随机密钥，并通过 `wrangler secret put SESSION_ENCRYPTION_KEY` 保存；
 5. 打开网站执行“重新授权”，重新建立加密会话；
-6. 手动同步一次，确认原歌单和历史仍然存在。
+6. 手动全量同步一次，确认已监控歌单仍然存在。
 
 清理顺序必须先处理待绑定记录，再处理认证流程和会话，以满足 D1 外键约束。执行任何恢复 SQL 前都应先备份数据库。
 

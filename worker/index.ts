@@ -7,7 +7,8 @@ import handler from "vinext/server/app-router-entry";
 import api from "./api";
 import type { Env } from "./env";
 
-export { MusicSyncWorkflow } from "./workflow";
+export { MusicSyncWorkflow, MusicBatchWorkflow } from "./workflow";
+import { createSyncBatch } from "./sync-batches";
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -41,11 +42,7 @@ const worker = {
     _controller: ScheduledController,
     env: Env,
   ): Promise<void> {
-    if (!env.MUSIC_SYNC) {
-      throw new Error("MUSIC_SYNC workflow binding is unavailable");
-    }
-
-    await env.MUSIC_SYNC.create({ params: { source: "scheduled" } });
+    await createSyncBatch(env, "scheduled");
   },
 };
 

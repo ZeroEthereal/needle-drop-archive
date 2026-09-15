@@ -64,6 +64,10 @@ export async function getInstanceConfig(env: Env): Promise<InstanceConfig> {
 
 export async function ensureInstanceConfig(env: Env): Promise<InstanceConfig> {
   const current = await getInstanceConfig(env);
+  if (current.status === "ready") {
+    await ensureMonitoredPlaylistBridge(env, current);
+    return current;
+  }
   if (current.status !== "unconfigured" || !env.NETEASE_EXPECTED_UID || !env.NETEASE_PLAYLIST_ID) {
     return current;
   }
@@ -94,7 +98,42 @@ export async function ensureInstanceConfig(env: Env): Promise<InstanceConfig> {
     }
     playlist = await client.getPlaylistDetail(env.NETEASE_PLAYLIST_ID, session.session).catch(() => null);
   }
-  return bootstrapLegacyInstanceConfig(env, profile, playlist);
+  const bootstrapped = await bootstrapLegacyInstanceConfig(env, profile, playlist);
+  await ensureMonitoredPlaylistBridge(env, bootstrapped);
+  return bootstrapped;
+}
+
+async function ensureMonitoredPlaylistBridge(env: Env, config: InstanceConfig) {
+  if (config.status !== "ready" || !config.playlistId) return;
+  const existing = await env.DB.prepare(`SELECT id FROM monitored_playlists LIMIT 1`)
+    .first<{ id: string }>();
+  if (existing) return;
+  const results = await env.DB.batch([
+    env.DB.prepare(`INSERT INTO monitored_playlists
+      (id, name, cover_url, owner_uid, owner_name, owned, list_order,
+       baseline_established, bound_at)
+      SELECT playlist_id, COALESCE(playlist_name, '已绑定歌单'), playlist_cover_url,
+        COALESCE(playlist_owner_uid, account_uid, ''),
+        COALESCE(playlist_owner_name, account_nickname, '网易云用户'),
+        playlist_owned, 0, 1, COALESCE(bound_at, CURRENT_TIMESTAMP)
+      FROM instance_config WHERE id = 'primary' AND status = 'ready'
+        AND binding_version = ? AND playlist_id IS NOT NULL
+      ON CONFLICT(id) DO NOTHING`).bind(config.bindingVersion),
+    env.DB.prepare(`INSERT INTO playlist_song_states
+      (playlist_id, song_id, bucket, anomaly_type, first_seen_at,
+       last_seen_at, last_confirmed_at, last_playable_at, confirmed_at,
+       created_at, updated_at)
+      SELECT i.playlist_id, m.song_id, m.bucket, m.anomaly_type,
+        m.first_seen_at, m.last_seen_at,
+        COALESCE(m.last_confirmed_at, m.last_seen_at), m.last_playable_at,
+        m.confirmed_at, m.created_at, m.updated_at
+      FROM managed_songs m CROSS JOIN instance_config i
+      WHERE i.id = 'primary' AND i.status = 'ready'
+        AND i.binding_version = ? AND i.playlist_id IS NOT NULL
+      ON CONFLICT(playlist_id, song_id) DO NOTHING`).bind(config.bindingVersion),
+  ]);
+  const failed = results.find((result) => !result.success);
+  if (failed) throw new Error(failed.error || "Could not initialize monitored playlist bridge");
 }
 
 export function playlistPublicMetadata(playlist: PlaylistDetail, accountUid: string) {
@@ -107,6 +146,7 @@ export function playlistPublicMetadata(playlist: PlaylistDetail, accountUid: str
     ownerName: playlist.ownerName,
     owned: playlist.userId === accountUid,
     private: playlist.privacy !== null && playlist.privacy !== 0,
+    specialType: playlist.specialType,
   };
 }
 
