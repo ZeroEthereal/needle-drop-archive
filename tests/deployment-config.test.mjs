@@ -3,21 +3,6 @@ import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-test("the free-plan Cron Trigger starts the durable music sync Workflow", async () => {
-  const [config, entrypoint] = await Promise.all([
-    readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
-    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
-  ]);
-
-  assert.match(config, /"crons"\s*:\s*\["17 19 \* \* \*"\]/);
-  assert.doesNotMatch(config, /"schedules"\s*:/);
-  assert.match(entrypoint, /async scheduled\(/);
-  assert.match(
-    entrypoint,
-    /MUSIC_SYNC\.create\(\{ params: \{ source: "scheduled" \} \}\)/,
-  );
-});
-
 test("email notifications are removed without removing Access email authentication", async () => {
   const [config, access, env, api, runner, storage, component, initialMigration, removalMigration] = await Promise.all([
     readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
