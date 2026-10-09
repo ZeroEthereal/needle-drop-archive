@@ -228,8 +228,10 @@ input:focus-visible {
   margin-top: 48px;
 }
 
-.sidebar-playlists { display: grid; gap: 3px; max-height: min(42vh,430px); overflow-y: auto; margin: 0 5px 6px 26px; padding-left: 12px; border-left: 1px solid rgba(255,255,255,.12); }
+.sidebar-playlists { display: grid; gap: 3px; max-height: min(42vh,430px); overflow-x: hidden; overflow-y: auto; margin: 0 5px 6px 26px; padding-left: 12px; border-left: 1px solid rgba(255,255,255,.12); }
 .sidebar nav .sidebar-playlists button { display: flex; min-height: 38px; justify-content: space-between; gap: 8px; padding: 5px 9px; border-radius: 9px; font-size: 11px; }
+.sidebar nav .sidebar-playlists button:hover,
+.sidebar nav .sidebar-playlists button.is-active { transform: none; }
 .sidebar nav .sidebar-playlists button small { margin: 0; letter-spacing: 0; white-space: nowrap; }
 
 .sidebar nav button {
