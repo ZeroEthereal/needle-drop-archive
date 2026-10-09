@@ -55,6 +55,18 @@ export interface SyncBatchStatus {
   createdAt?: string; completedAt?: string; tasks: PlaylistTask[];
 }
 
+export interface SyncHistoryRecord {
+  id: string;
+  trigger: "manual" | "scheduled";
+  scope: "all" | "playlist";
+  completedAt: string;
+  status: "success" | "failed";
+  playlistCount: number;
+  failureCount: number;
+  playlist?: { id: string; name: string };
+  failedPlaylists: Array<{ id: string; name: string }>;
+}
+
 export type SessionStatus =
   | "valid"
   | "anonymous"

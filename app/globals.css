@@ -1948,6 +1948,32 @@ input:focus-visible {
 .batch-task.state-success span { color: var(--lime); }
 .batch-task.state-failed span { color: var(--red); }
 .batch-task small { grid-column: 1 / -1; color: var(--muted); }
+
+.sync-history { padding: 22px; border-radius: 18px; min-width: 0; }
+.history-heading h3 { margin: 0 0 8px; font-size: 17px; }
+.history-heading p { margin: 0 0 18px; color: var(--muted); font-size: 12px; }
+.history-records { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.history-record { padding: 14px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.history-record-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; font-size: 12px; }
+.history-record-heading time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.history-trigger { color: var(--text); }
+.history-result { margin-left: auto; color: var(--lime); }
+.history-record.state-failed .history-result { color: var(--red); }
+.history-summary { margin: 10px 0 0; font-size: 13px; overflow-wrap: anywhere; }
+.history-failures { display: flex; gap: 10px; margin-top: 10px; font-size: 12px; }
+.history-failures > span { flex-shrink: 0; color: var(--red); }
+.history-failures ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
+.history-pagination { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.history-pagination > span { color: var(--muted); font-size: 12px; text-align: center; }
+.history-message { color: var(--muted); font-size: 13px; }
+@media (max-width: 600px) {
+  .sync-history { padding: 16px; }
+  .history-record { padding: 12px; }
+  .history-record-heading { gap: 8px; }
+  .history-record-heading time { width: 100%; }
+  .history-pagination { gap: 8px; }
+  .history-pagination > span { flex-basis: 100%; order: -1; }
+}
 .mobile-playlist-drawer { display: grid; gap: 8px; align-content: start; }
 .mobile-playlist-drawer > button:not(.modal-close) { display: flex; justify-content: space-between; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.04); color: white; text-align: left; }
 .mobile-playlist-drawer > button.is-active { border-color: var(--pink); }

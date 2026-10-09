@@ -1,5 +1,7 @@
 "use client";
 
+import SyncHistory from "./SyncHistory";
+
 import {
   Fragment,
   useCallback,
@@ -1161,14 +1163,7 @@ function SyncView({
             {status.error ? <div className="sync-error"><strong>{status.state === "reauth_required" ? "需要重新授权网易云" : "同步没有完成"}</strong><p>{status.error}</p></div> : null}
           </section>
 
-          {status.batch ? <section className="batch-results glass-panel">
-            <h3>{status.batch.trigger === "scheduled" ? "每日自动同步" : "手动同步"} · {status.batch.status === "running" ? "进行中" : status.batch.status === "queued" ? "等待执行" : "已结束"}</h3>
-            <p>成功 {status.batch.successCount} · 失败 {status.batch.failureCount} · {isActive ? "待执行" : "未执行"} {status.batch.unexecutedCount}</p>
-            <div>{status.batch.tasks.map((task) => <article key={task.playlistId} className={`batch-task state-${task.status}`}>
-              <strong>{task.playlistName}</strong><span>{task.status === "success" ? "成功" : task.status === "failed" ? "失败" : task.status === "running" ? "正在同步" : isActive ? "待执行" : "未执行"}</span>
-              {task.error ? <small>{task.error}</small> : null}
-            </article>)}</div>
-          </section> : null}
+          <SyncHistory key={`${status.bindingVersion ?? ""}:${status.completedBatch?.id ?? ""}`} />
 
           <section className="connection-grid">
             <article className="connection-card glass-panel">

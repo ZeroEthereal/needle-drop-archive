@@ -24,6 +24,7 @@ import {
   listMultiRecovery, listPlaylistSongs,
 } from "../lib/sync/multi-repository";
 import { createSyncBatch, latestBatchStatus, latestCompletedBatch } from "./sync-batches";
+import { listSyncHistory } from "./sync-history";
 import type { PlaylistSelection } from "./playlist-set-binding";
 
 const QR_CREATE_COOLDOWN_MS = 5_000;
@@ -252,6 +253,11 @@ app.get("/api/likes", async (context) => {
     total: page.total,
     playlistId,
   });
+});
+
+app.get("/api/sync/history", async (context) => {
+  const offset = positiveInteger(new URL(context.req.url).searchParams.get("offset"), 0, "offset");
+  return context.json(await listSyncHistory(context.env.DB, offset));
 });
 
 app.get("/api/sync/status", async (context) => {
