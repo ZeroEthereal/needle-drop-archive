@@ -912,16 +912,21 @@ function RecoveryView({
   );
 }
 
+function playlistDisplayName(playlist: MonitoredPlaylistStatus): string {
+  return playlist.specialType === 5 ? "我喜欢的音乐" : playlist.name;
+}
+
 function PlaylistPulse({ playlist, disabled, onSync }: {
   playlist?: MonitoredPlaylistStatus; disabled: boolean; onSync: () => void;
 }) {
   const task = playlist?.task;
+  const playlistName = playlist ? playlistDisplayName(playlist) : "歌单歌曲";
   const active = task?.status === "running" || task?.status === "queued";
   const currentPhase = phaseIndex(task?.phase);
   const steps = ["验证会话", "读取歌单", "检查状态", "复核异常", "完成同步"];
   return <>
-    <PageHeading eyebrow="KEEP THE BEAT ALIVE" title={playlist?.name ?? "歌单歌曲"}
-      description={playlist ? `查看 ${playlist.name} 的守护状态，并可单独同步这个歌单。` : "等待选择歌单。"}
+    <PageHeading eyebrow="KEEP THE BEAT ALIVE" title={playlistName}
+      description={playlist ? `查看 ${playlistName} 的守护状态，并可单独同步这个歌单。` : "等待选择歌单。"}
       right={<button type="button" className="primary-button sync-button"
         disabled={!playlist || disabled} onClick={onSync}><span className={active ? "spin-glyph" : ""}>↻</span>
         {active ? "正在同步" : "立即同步"}</button>} />
@@ -942,7 +947,7 @@ function PlaylistPulse({ playlist, disabled, onSync }: {
       {task?.error && task.status === "failed" ? <div className="sync-error"><strong>这个歌单同步失败</strong><p>{task.error}</p></div> : null}
     </section>
     <section className="sync-metrics">
-      <article className="metric-card accent-cyan"><p>{playlist?.name ?? "歌单歌曲"}</p><strong>{formatNumber(playlist?.totalSongCount)}</strong><span>正常、变灰与消失的总和</span></article>
+      <article className="metric-card accent-cyan"><p>{playlistName}</p><strong>{formatNumber(playlist?.totalSongCount)}</strong><span>正常、变灰与消失的总和</span></article>
       <article className="metric-card accent-lime"><p>正常播放</p><strong>{formatNumber(playlist?.normalCount)}</strong><span>本轮确认可以正常播放</span></article>
       <article className="metric-card accent-violet"><p>变灰</p><strong>{formatNumber(playlist?.greyCount)}</strong><span>仍在歌单但不可播放</span></article>
       <article className="metric-card accent-red"><p>消失</p><strong>{formatNumber(playlist?.missingCount)}</strong><span>被用户删除或被官方下架</span></article>
@@ -1886,7 +1891,7 @@ export function MusicVault() {
             {item.id === "likes" ? <div className="sidebar-playlists">
               {status?.playlists?.map((playlist) => <button type="button" key={playlist.id}
                 className={selectedPlaylistId === playlist.id && view === "likes" ? "is-active" : ""}
-                onClick={() => switchPlaylist(playlist.id)}>{playlist.name}<small>{playlist.totalSongCount} 首</small></button>)}
+                onClick={() => switchPlaylist(playlist.id)}>{playlistDisplayName(playlist)}<small>{playlist.totalSongCount} 首</small></button>)}
             </div> : null}
           </Fragment>)}
         </nav>
@@ -2008,7 +2013,7 @@ export function MusicVault() {
           <button type="button" className="modal-close" onClick={() => setMobilePlaylistOpen(false)} aria-label="关闭">×</button>
           <h2>歌单歌曲</h2>{status?.playlists?.map((playlist) => <button type="button" key={playlist.id}
             className={playlist.id === selectedPlaylistId ? "is-active" : ""}
-            onClick={() => switchPlaylist(playlist.id)}>{playlist.name}<span>{playlist.totalSongCount} 首</span></button>)}
+            onClick={() => switchPlaylist(playlist.id)}>{playlistDisplayName(playlist)}<span>{playlist.totalSongCount} 首</span></button>)}
         </section>
       </div> : null}
       {batchSummary ? <div className="modal-backdrop" role="presentation"
