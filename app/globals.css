@@ -1959,7 +1959,7 @@ input:focus-visible {
 .history-trigger { color: var(--text); white-space: nowrap; }
 .history-result { color: var(--lime); }
 .history-record.state-failed .history-result { color: var(--red); }
-.history-summary { margin: 0; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+.history-summary { margin: 0; min-width: 0; font-size: 13px; text-align: right; overflow-wrap: anywhere; }
 .history-failure-count { color: var(--muted); }
 .history-failures { display: flex; gap: 10px; margin: 10px 0 0 284px; font-size: 12px; }
 .history-failures > span { flex-shrink: 0; color: var(--red); }
