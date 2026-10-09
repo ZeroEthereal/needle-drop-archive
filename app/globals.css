@@ -1953,7 +1953,7 @@ input:focus-visible {
 .history-heading h3 { margin: 0 0 8px; font-size: 17px; }
 .history-heading p { margin: 0 0 18px; color: var(--muted); font-size: 12px; }
 .history-records { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
-.history-record { padding: 14px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.history-record { padding: 14px 24px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
 .history-record-heading { display: grid; grid-template-columns: 180px 72px minmax(0, 1fr); align-items: baseline; gap: 8px 16px; font-size: 12px; line-height: 1.6; }
 .history-record-heading time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .history-trigger { color: var(--text); white-space: nowrap; }
@@ -1974,7 +1974,7 @@ input:focus-visible {
 }
 @media (max-width: 600px) {
   .sync-history { padding: 16px; }
-  .history-record { padding: 12px; }
+  .history-record { padding: 12px 20px; }
   .history-record-heading { gap: 8px; }
   .history-pagination { gap: 8px; }
   .history-pagination > span { flex-basis: 100%; order: -1; }
