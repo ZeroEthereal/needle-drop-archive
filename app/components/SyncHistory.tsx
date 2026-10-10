@@ -29,7 +29,11 @@ export default function SyncHistory() {
   useEffect(() => {
     const requests = sequence.current;
     let controller: AbortController | undefined;
+    let checking = false;
+    let disposed = false;
     const load = async () => {
+      if (document.visibilityState !== "visible" || checking) return;
+      checking = true;
       const request = ++requests.value;
       controller?.abort();
       controller = new AbortController();
@@ -51,15 +55,29 @@ export default function SyncHistory() {
       } catch {
         if (request === requests.value) setError(true);
       } finally {
+        checking = false;
         if (request === requests.value) setLoading(false);
+        else if (!disposed && document.visibilityState === "visible") void load();
       }
     };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void load();
+      } else {
+        ++requests.value;
+        controller?.abort();
+      }
+    };
+    const onFocus = () => void load();
     void load();
-    const timer = window.setInterval(() => void load(), 30000);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onFocus);
     return () => {
+      disposed = true;
       ++requests.value;
       controller?.abort();
-      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onFocus);
     };
   }, [offset, retry]);
 
