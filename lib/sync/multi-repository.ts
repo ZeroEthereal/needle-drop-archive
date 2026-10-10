@@ -1,5 +1,6 @@
 import type { D1DatabasePort } from "./repository";
 import type { ManagedSongState, SyncPlan, SyncState } from "./state-machine";
+import { encodeSongUpserts, loadSongMetadata, propagateSourceSql, upsertSongsSql } from "./song-storage.ts";
 
 export interface MonitoredPlaylist {
   id: string;
@@ -16,12 +17,13 @@ export interface MonitoredPlaylist {
   normalCount: number;
   missingCount: number;
   greyCount: number;
+  mismatchCount: number;
 }
 
 interface PlaylistRow {
   id: string; name: string; cover_url: string | null; owner_uid: string; owner_name: string;
   owned: number; special_type: number | null; list_order: number; baseline_established: number;
-  bound_at: string; total_count: number; normal_count: number; missing_count: number; grey_count: number;
+  bound_at: string; total_count: number; normal_count: number; missing_count: number; grey_count: number; mismatch_count: number;
 }
 
 export async function listMonitoredPlaylists(db: D1DatabasePort): Promise<MonitoredPlaylist[]> {
@@ -31,7 +33,8 @@ export async function listMonitoredPlaylists(db: D1DatabasePort): Promise<Monito
            COUNT(s.song_id) AS total_count,
            SUM(CASE WHEN s.bucket = 'normal' THEN 1 ELSE 0 END) AS normal_count,
            SUM(CASE WHEN s.anomaly_type = 'missing' THEN 1 ELSE 0 END) AS missing_count,
-           SUM(CASE WHEN s.anomaly_type = 'grey' THEN 1 ELSE 0 END) AS grey_count
+           SUM(CASE WHEN s.anomaly_type = 'grey' THEN 1 ELSE 0 END) AS grey_count,
+           SUM(CASE WHEN s.anomaly_type = 'mismatch' THEN 1 ELSE 0 END) AS mismatch_count
     FROM monitored_playlists p LEFT JOIN playlist_song_states s ON s.playlist_id = p.id
     GROUP BY p.id ORDER BY p.list_order, p.id
   `).all<PlaylistRow>();
@@ -43,6 +46,7 @@ export async function listMonitoredPlaylists(db: D1DatabasePort): Promise<Monito
     boundAt: row.bound_at, totalSongCount: Number(row.total_count || 0),
     normalCount: Number(row.normal_count || 0), missingCount: Number(row.missing_count || 0),
     greyCount: Number(row.grey_count || 0),
+    mismatchCount: Number(row.mismatch_count || 0),
   }));
 }
 
@@ -57,12 +61,12 @@ export async function loadPlaylistSyncState(db: D1DatabasePort, playlistId: stri
            last_confirmed_at, last_playable_at, confirmed_at, created_at, updated_at
     FROM playlist_song_states WHERE playlist_id = ?
   `).bind(playlistId).all<{
-    song_id: string; bucket: "normal" | "anomaly"; anomaly_type: "missing" | "grey" | null;
+    song_id: string; bucket: "normal" | "anomaly"; anomaly_type: "missing" | "grey" | "mismatch" | null;
     first_seen_at: string; last_seen_at: string; last_confirmed_at: string;
     last_playable_at: string | null; confirmed_at: string | null; created_at: string; updated_at: string;
   }>();
   if (!result.success) throw new Error(result.error || "Could not load playlist state");
-  return { managedSongs: (result.results ?? []).map((row): ManagedSongState => ({
+  return { songs: await loadSongMetadata(db), managedSongs: (result.results ?? []).map((row): ManagedSongState => ({
     songId: row.song_id, bucket: row.bucket, anomalyType: row.anomaly_type,
     firstSeenAt: row.first_seen_at, lastSeenAt: row.last_seen_at,
     lastConfirmedAt: row.last_confirmed_at, lastPlayableAt: row.last_playable_at,
@@ -79,15 +83,7 @@ export async function commitPlaylistSyncPlan(
       AND EXISTS (SELECT 1 FROM sync_playlist_tasks t WHERE t.batch_id = ?
         AND t.playlist_id = p.id AND t.status = 'running' AND t.binding_version = ?))`;
   const statements = [
-    db.prepare(`INSERT INTO songs (id, title, artists, album, cover_url, netease_url, created_at, updated_at)
-      SELECT json_extract(value, '$.id'), json_extract(value, '$.title'),
-        json_extract(value, '$.artists'), json_extract(value, '$.album'),
-        json_extract(value, '$.coverUrl'), json_extract(value, '$.neteaseUrl'),
-        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM json_each(?) WHERE ${guard}
-      ON CONFLICT(id) DO UPDATE SET title = excluded.title, artists = excluded.artists,
-        album = excluded.album, cover_url = excluded.cover_url,
-        netease_url = excluded.netease_url, updated_at = CURRENT_TIMESTAMP`
-    ).bind(JSON.stringify(plan.songUpserts.map((song) => ({ ...song, artists: JSON.stringify(song.artists) }))),
+    db.prepare(upsertSongsSql(guard)).bind(encodeSongUpserts(plan.songUpserts),
       playlistId, bindingVersion, batchId, bindingVersion),
     db.prepare(`INSERT INTO playlist_song_states (
       playlist_id, song_id, bucket, anomaly_type, first_seen_at, last_seen_at,
@@ -107,20 +103,23 @@ export async function commitPlaylistSyncPlan(
       bindingVersion, batchId, bindingVersion),
     db.prepare(`UPDATE sync_playlist_tasks SET status = 'success', phase = 'complete',
       observed_at = ?, current_song_count = ?, new_count = ?, confirmed_missing_count = ?,
-      confirmed_grey_count = ?, auto_recovered_count = ?, completed_at = ?,
+      confirmed_grey_count = ?, confirmed_mismatch_count = ?, auto_recovered_count = ?, completed_at = ?,
       error_code = NULL, error_message = NULL, updated_at = CURRENT_TIMESTAMP
       WHERE batch_id = ? AND playlist_id = ? AND status = 'running' AND binding_version = ?
         AND EXISTS (SELECT 1 FROM instance_config WHERE id = 'primary'
           AND binding_version = ? AND status = 'ready')`
     ).bind(plan.observedAt, plan.result.currentSongCount, plan.result.newCount,
-      plan.result.confirmedMissingCount, plan.result.confirmedGreyCount,
+      plan.result.confirmedMissingCount, plan.result.confirmedGreyCount, plan.result.confirmedMismatchCount,
       plan.result.autoRecoveredCount, new Date().toISOString(), batchId,
       playlistId, bindingVersion, bindingVersion),
   ];
+  statements.splice(2, 0, db.prepare(propagateSourceSql(guard)).bind(
+    encodeSongUpserts(plan.songUpserts), plan.observedAt, plan.observedAt, plan.observedAt,
+    plan.observedAt, plan.observedAt, playlistId, bindingVersion, batchId, bindingVersion));
   const results = await db.batch(statements);
   const failed = results.find((item) => !item.success);
   if (failed) throw new Error(failed.error || "D1 rejected playlist sync");
-  if ((results[2].meta?.changes ?? 0) !== 1) throw new Error("Playlist binding changed during sync");
+  if ((results[3].meta?.changes ?? 0) !== 1) throw new Error("Playlist binding changed during sync");
 }
 
 export async function completeSongEverywhere(db: D1DatabasePort, songId: string,
@@ -131,11 +130,9 @@ export async function completeSongEverywhere(db: D1DatabasePort, songId: string,
     AND NOT EXISTS (SELECT 1 FROM sync_batches WHERE status IN ('queued', 'running'))
     AND NOT EXISTS (SELECT 1 FROM pending_playlist_sets WHERE status IN ('preparing', 'running'))`;
   const results = await db.batch([
-    db.prepare(`DELETE FROM playlist_song_states WHERE song_id = ? AND bucket = 'anomaly'
+    db.prepare(`DELETE FROM songs WHERE id = ? AND EXISTS (
+      SELECT 1 FROM playlist_song_states WHERE song_id = songs.id AND bucket = 'anomaly')
       AND ${guard}`).bind(songId, bindingVersion, accountUid),
-    db.prepare(`DELETE FROM songs WHERE id = ? AND NOT EXISTS (
-      SELECT 1 FROM playlist_song_states WHERE song_id = ?) AND ${guard}`)
-      .bind(songId, songId, bindingVersion, accountUid),
   ]);
   const failed = results.find((item) => !item.success);
   if (failed) throw new Error(failed.error || "Could not complete song");
@@ -157,13 +154,14 @@ export async function completeSongEverywhere(db: D1DatabasePort, songId: string,
 }
 
 export interface MultiRecoveryRow {
-  songId: string; type: "missing" | "grey"; title: string; artists: string[];
+  songId: string; type: "missing" | "grey" | "mismatch"; title: string; artists: string[];
   album: string | null; coverUrl: string | null; neteaseUrl: string;
-  lastNormalAt: string | null; contexts: Array<{ playlistId: string; playlistName: string; type: "missing" | "grey" }>;
+  observedTitle: string | null; observedArtists: string[] | null;
+  lastNormalAt: string | null; contexts: Array<{ playlistId: string; playlistName: string; type: "missing" | "grey" | "mismatch" }>;
 }
 
 export async function listMultiRecovery(db: D1DatabasePort, options: {
-  type?: "missing" | "grey"; playlistId?: string; query?: string; offset?: number; limit?: number;
+  type?: "missing" | "grey" | "mismatch"; playlistId?: string; query?: string; offset?: number; limit?: number;
 } = {}): Promise<{ items: MultiRecoveryRow[]; nextOffset: number | null; total: number }> {
   const limit = Math.min(100, Math.max(1, options.limit ?? 40));
   const offset = Math.max(0, options.offset ?? 0);
@@ -172,8 +170,8 @@ export async function listMultiRecovery(db: D1DatabasePort, options: {
     AND (? IS NULL OR s.playlist_id = ?)`;
   const [page, count] = await Promise.all([
     db.prepare(`SELECT songs.id AS song_id, songs.title, songs.artists, songs.album,
-      songs.cover_url, songs.netease_url,
-      (SELECT CASE WHEN SUM(x.anomaly_type = 'missing') > 0 THEN 'missing' ELSE 'grey' END
+      songs.cover_url, songs.netease_url, songs.observed_title, songs.observed_artists,
+      (SELECT CASE WHEN SUM(x.anomaly_type = 'missing') > 0 THEN 'missing' WHEN SUM(x.anomaly_type = 'grey') > 0 THEN 'grey' ELSE 'mismatch' END
        FROM playlist_song_states x WHERE x.song_id = songs.id AND x.bucket = 'anomaly') AS type,
       (SELECT MIN(x.last_playable_at) FROM playlist_song_states x WHERE x.song_id = songs.id
        AND x.bucket = 'anomaly' AND x.last_playable_at IS NOT NULL) AS last_normal_at,
@@ -192,7 +190,8 @@ export async function listMultiRecovery(db: D1DatabasePort, options: {
         options.playlistId ?? null, options.playlistId ?? null,
         query, query, query, query, limit + 1, offset).all<{
           song_id: string; title: string; artists: string; album: string | null;
-          cover_url: string | null; netease_url: string; type: "missing" | "grey";
+          cover_url: string | null; netease_url: string; type: "missing" | "grey" | "mismatch";
+          observed_title: string | null; observed_artists: string | null;
           last_normal_at: string | null; contexts: string;
         }>(),
     db.prepare(`SELECT COUNT(*) AS total FROM songs WHERE EXISTS (
@@ -208,6 +207,8 @@ export async function listMultiRecovery(db: D1DatabasePort, options: {
       songId: row.song_id, type: row.type, title: row.title,
       artists: JSON.parse(row.artists), album: row.album, coverUrl: row.cover_url,
       neteaseUrl: row.netease_url, lastNormalAt: row.last_normal_at,
+      observedTitle: row.type === "mismatch" ? row.observed_title : null,
+      observedArtists: row.type === "mismatch" && row.observed_artists !== null ? JSON.parse(row.observed_artists) : null,
       contexts: JSON.parse(row.contexts),
     })),
     nextOffset: found.length > limit ? offset + limit : null,
@@ -216,28 +217,28 @@ export async function listMultiRecovery(db: D1DatabasePort, options: {
 }
 
 export async function listPlaylistSongs(db: D1DatabasePort, playlistId: string, options: {
-  query?: string; offset?: number; limit?: number;
+  query?: string; offset?: number; limit?: number; state?: "playable" | "grey" | "missing" | "mismatch";
 } = {}) {
   const limit = Math.min(100, Math.max(1, options.limit ?? 40));
   const offset = Math.max(0, options.offset ?? 0);
   const query = `%${(options.query ?? "").trim()}%`;
   const [page, count] = await Promise.all([
     db.prepare(`SELECT songs.id, songs.title, songs.artists, songs.album,
-      songs.cover_url, songs.netease_url, s.first_seen_at, s.last_seen_at,
+      songs.cover_url, songs.netease_url, songs.observed_title, songs.observed_artists, s.first_seen_at, s.last_seen_at,
       s.last_confirmed_at,
       CASE WHEN s.bucket = 'anomaly' THEN s.anomaly_type ELSE 'playable' END AS state
       FROM playlist_song_states s JOIN songs ON songs.id = s.song_id
-      WHERE s.playlist_id = ? AND (? = '%%' OR songs.title LIKE ? OR songs.artists LIKE ?
+      WHERE s.playlist_id = ? AND (? IS NULL OR CASE WHEN s.bucket = 'anomaly' THEN s.anomaly_type ELSE 'playable' END = ?) AND (? = '%%' OR songs.title LIKE ? OR songs.artists LIKE ?
         OR COALESCE(songs.album, '') LIKE ?)
       ORDER BY s.last_seen_at DESC, songs.id DESC LIMIT ? OFFSET ?`)
-      .bind(playlistId, query, query, query, query, limit + 1, offset).all<{
+      .bind(playlistId, options.state ?? null, options.state ?? null, query, query, query, query, limit + 1, offset).all<{
         id: string; title: string; artists: string; album: string | null;
         cover_url: string | null; netease_url: string; first_seen_at: string;
         last_seen_at: string; last_confirmed_at: string; state: string;
       }>(),
     db.prepare(`SELECT COUNT(*) AS total FROM playlist_song_states s JOIN songs ON songs.id = s.song_id
-      WHERE s.playlist_id = ? AND (? = '%%' OR songs.title LIKE ? OR songs.artists LIKE ?
-        OR COALESCE(songs.album, '') LIKE ?)`).bind(playlistId, query, query, query, query)
+      WHERE s.playlist_id = ? AND (? IS NULL OR CASE WHEN s.bucket = 'anomaly' THEN s.anomaly_type ELSE 'playable' END = ?) AND (? = '%%' OR songs.title LIKE ? OR songs.artists LIKE ?
+        OR COALESCE(songs.album, '') LIKE ?)`).bind(playlistId, options.state ?? null, options.state ?? null, query, query, query, query)
       .first<{ total: number }>(),
   ]);
   if (!page.success) throw new Error(page.error || "Could not load playlist songs");

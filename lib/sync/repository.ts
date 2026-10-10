@@ -1,4 +1,6 @@
 import type { ManagedSongState, SyncPlan, SyncState } from "./state-machine";
+import { encodeSongUpserts, loadSongMetadata, upsertSongsSql, propagateSourceSql } from "./song-storage.ts";
+import { completeSongEverywhere, loadPlaylistSyncState } from "./multi-repository.ts";
 
 export interface D1ResultPort<T = Record<string, unknown>> {
   success: boolean;
@@ -24,7 +26,7 @@ export interface D1DatabasePort {
 interface ManagedSongDbRow {
   song_id: string;
   bucket: "normal" | "anomaly";
-  anomaly_type: "missing" | "grey" | null;
+  anomaly_type: "missing" | "grey" | "mismatch" | null;
   first_seen_at: string;
   last_seen_at: string;
   last_confirmed_at?: string | null;
@@ -51,6 +53,12 @@ function hasLastConfirmedColumn(db: D1DatabasePort): Promise<boolean> {
 }
 
 export async function loadSyncState(db: D1DatabasePort): Promise<SyncState> {
+  const modern = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monitored_playlists'").first();
+  if (modern) {
+    const config = await db.prepare("SELECT playlist_id FROM instance_config WHERE id = 'primary'")
+      .first<{ playlist_id: string | null }>();
+    if (config?.playlist_id) return loadPlaylistSyncState(db, config.playlist_id);
+  }
   const hasLastConfirmedAt = await hasLastConfirmedColumn(db);
   const result = await db.prepare(`
     SELECT song_id, bucket, anomaly_type, first_seen_at, last_seen_at,
@@ -59,6 +67,7 @@ export async function loadSyncState(db: D1DatabasePort): Promise<SyncState> {
   `).all<ManagedSongDbRow>();
 
   return {
+    songs: await loadSongMetadata(db),
     managedSongs: rows(result).map((row): ManagedSongState => ({
       songId: row.song_id,
       bucket: row.bucket,
@@ -74,29 +83,7 @@ export async function loadSyncState(db: D1DatabasePort): Promise<SyncState> {
   };
 }
 
-const UPSERT_SONGS_SQL = `
-  INSERT INTO songs (
-    id, title, artists, album, cover_url, netease_url, created_at, updated_at
-  )
-  SELECT
-    json_extract(value, '$.id'),
-    json_extract(value, '$.title'),
-    json_extract(value, '$.artists'),
-    json_extract(value, '$.album'),
-    json_extract(value, '$.coverUrl'),
-    json_extract(value, '$.neteaseUrl'),
-    CURRENT_TIMESTAMP,
-    CURRENT_TIMESTAMP
-  FROM json_each(?)
-  WHERE true
-  ON CONFLICT(id) DO UPDATE SET
-    title = excluded.title,
-    artists = excluded.artists,
-    album = excluded.album,
-    cover_url = excluded.cover_url,
-    netease_url = excluded.netease_url,
-    updated_at = CURRENT_TIMESTAMP
-`;
+const UPSERT_SONGS_SQL = upsertSongsSql("true");
 
 const UPSERT_MANAGED_SONGS_SQL = `
   INSERT INTO managed_songs (
@@ -218,7 +205,7 @@ export async function commitSyncPlan(
     db.prepare(UPSERT_SONGS_SQL.replace(
       "WHERE true",
       "WHERE EXISTS (SELECT 1 FROM instance_config WHERE id = 'primary' AND binding_version = ? AND status = 'ready')",
-    )).bind(JSON.stringify(plan.songUpserts), options.bindingVersion),
+    )).bind(encodeSongUpserts(plan.songUpserts), options.bindingVersion),
   ];
   if (plan.managedSongUpserts.length > 0) {
     statements.push(
@@ -229,15 +216,37 @@ export async function commitSyncPlan(
     );
   }
 
+  const modern = await db.prepare("SELECT name FROM sqlite_master WHERE name = 'playlist_song_states'").first();
+  if (modern) {
+    const guard = "EXISTS (SELECT 1 FROM instance_config WHERE id = 'primary' AND binding_version = ? AND status = 'ready')";
+    statements.push(db.prepare(`INSERT INTO playlist_song_states
+      (playlist_id, song_id, bucket, anomaly_type, first_seen_at, last_seen_at, last_confirmed_at,
+       last_playable_at, confirmed_at, created_at, updated_at)
+      SELECT i.playlist_id, json_extract(value, '$.songId'), json_extract(value, '$.bucket'),
+        json_extract(value, '$.anomalyType'), json_extract(value, '$.firstSeenAt'),
+        json_extract(value, '$.lastSeenAt'), json_extract(value, '$.lastConfirmedAt'),
+        json_extract(value, '$.lastPlayableAt'), json_extract(value, '$.confirmedAt'),
+        json_extract(value, '$.createdAt'), json_extract(value, '$.updatedAt')
+      FROM json_each(?) CROSS JOIN instance_config i JOIN monitored_playlists p ON p.id = i.playlist_id
+      WHERE i.id = 'primary' AND i.binding_version = ? AND i.status = 'ready'
+      ON CONFLICT(playlist_id, song_id) DO UPDATE SET bucket = excluded.bucket,
+        anomaly_type = excluded.anomaly_type, last_seen_at = excluded.last_seen_at,
+        last_confirmed_at = excluded.last_confirmed_at, last_playable_at = excluded.last_playable_at,
+        confirmed_at = excluded.confirmed_at, updated_at = excluded.updated_at`)
+      .bind(JSON.stringify(plan.managedSongUpserts), options.bindingVersion));
+    statements.push(db.prepare(propagateSourceSql(guard)).bind(encodeSongUpserts(plan.songUpserts),
+      plan.observedAt, plan.observedAt, plan.observedAt, plan.observedAt, plan.observedAt, options.bindingVersion));
+  }
+
   statements.push(
     db.prepare(`
       INSERT INTO sync_runs (
         id, trigger, status, phase, observed_at, shanghai_date, started_at,
         completed_at, current_song_count, new_count, confirmed_missing_count,
-        confirmed_grey_count, auto_recovered_count,
+        confirmed_grey_count, confirmed_mismatch_count, auto_recovered_count,
         created_at, updated_at
       )
-      SELECT ?, ?, 'success', 'complete', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      SELECT ?, ?, 'success', 'complete', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
       WHERE EXISTS (
         SELECT 1 FROM instance_config
         WHERE id = 'primary' AND binding_version = ? AND status = 'ready'
@@ -254,6 +263,7 @@ export async function commitSyncPlan(
         new_count = excluded.new_count,
         confirmed_missing_count = excluded.confirmed_missing_count,
         confirmed_grey_count = excluded.confirmed_grey_count,
+        confirmed_mismatch_count = excluded.confirmed_mismatch_count,
         auto_recovered_count = excluded.auto_recovered_count,
         error_code = NULL,
         error_message = NULL,
@@ -269,6 +279,7 @@ export async function commitSyncPlan(
       plan.result.newCount,
       plan.result.confirmedMissingCount,
       plan.result.confirmedGreyCount,
+      plan.result.confirmedMismatchCount,
       plan.result.autoRecoveredCount,
       options.bindingVersion,
     ),
@@ -339,13 +350,20 @@ export async function recordSyncFailure(
   if (failed) throw new Error(failed.error ?? "Could not record failed sync");
 }
 
-export type CompleteManagedSongResult = "completed" | "normal" | "not_found";
+export type CompleteManagedSongResult = "completed" | "normal" | "not_found" | "binding_changed" | "sync_in_progress";
 
 export async function completeManagedSong(
   db: D1DatabasePort,
   songId: string,
 ): Promise<CompleteManagedSongResult> {
   if (!songId.trim()) return "not_found";
+  const modern = await db.prepare("SELECT name FROM sqlite_master WHERE name = 'playlist_song_states'").first();
+  if (modern) {
+    const config = await db.prepare("SELECT binding_version, account_uid FROM instance_config WHERE id = 'primary'")
+      .first<{ binding_version: number; account_uid: string | null }>();
+    if (!config?.account_uid) return "not_found";
+    return completeSongEverywhere(db, songId, config.binding_version, config.account_uid);
+  }
 
   // Deleting the parent song removes its managed_songs row through ON DELETE CASCADE.
   // The EXISTS guard makes a stale page incapable of deleting a row already restored to normal.
@@ -368,7 +386,9 @@ export async function completeManagedSong(
 
 export interface RecoveryListRow {
   songId: string;
-  type: "missing" | "grey";
+  type: "missing" | "grey" | "mismatch";
+  observedTitle: string | null;
+  observedArtists: string[] | null;
   title: string;
   artists: string[];
   album: string | null;
@@ -383,7 +403,9 @@ export interface RecoveryListRow {
 
 interface RecoveryListDbRow {
   song_id: string;
-  type: "missing" | "grey";
+  type: "missing" | "grey" | "mismatch";
+  observed_title: string | null;
+  observed_artists: string | null;
   title: string;
   artists: string;
   album: string | null;
@@ -398,7 +420,7 @@ interface RecoveryListDbRow {
 
 export async function listOpenRecovery(
   db: D1DatabasePort,
-  options: { type?: "missing" | "grey"; query?: string; offset?: number; limit?: number } = {},
+  options: { type?: "missing" | "grey" | "mismatch"; query?: string; offset?: number; limit?: number } = {},
 ): Promise<{ items: RecoveryListRow[]; nextOffset: number | null }> {
   const hasLastConfirmedAt = await hasLastConfirmedColumn(db);
   const limit = Math.min(100, Math.max(1, options.limit ?? 40));
@@ -406,7 +428,7 @@ export async function listOpenRecovery(
   const query = `%${(options.query ?? "").trim()}%`;
   const type = options.type ?? null;
   const result = await db.prepare(`
-    SELECT m.song_id, m.anomaly_type AS type, s.title, s.artists, s.album,
+    SELECT m.song_id, m.anomaly_type AS type, s.title, s.artists, s.album, s.observed_title, s.observed_artists,
            s.cover_url, s.netease_url, m.first_seen_at, m.last_seen_at,
            ${hasLastConfirmedAt ? "m.last_confirmed_at," : "m.last_seen_at AS last_confirmed_at,"} m.last_playable_at AS last_normal_at, m.confirmed_at
     FROM managed_songs m
@@ -423,6 +445,8 @@ export async function listOpenRecovery(
     items: found.slice(0, limit).map((row) => ({
       songId: row.song_id,
       type: row.type,
+      observedTitle: row.type === "mismatch" ? row.observed_title : null,
+      observedArtists: row.type === "mismatch" && row.observed_artists !== null ? JSON.parse(row.observed_artists) : null,
       title: row.title,
       artists: JSON.parse(row.artists) as string[],
       album: row.album,
@@ -448,7 +472,7 @@ export interface LikeListRow {
   firstSeenAt: string;
   lastSeenAt: string;
   lastConfirmedAt: string;
-  state: "playable" | "grey" | "missing";
+  state: "playable" | "grey" | "missing" | "mismatch";
 }
 
 interface LikeListDbRow {
@@ -461,7 +485,7 @@ interface LikeListDbRow {
   first_seen_at: string;
   last_seen_at: string;
   last_confirmed_at: string;
-  state: "playable" | "grey" | "missing";
+  state: "playable" | "grey" | "missing" | "mismatch";
 }
 
 export async function listCurrentLikes(
@@ -521,6 +545,7 @@ export interface SyncOverview {
   normalCount: number;
   missingCount: number;
   greyCount: number;
+  mismatchCount: number;
   error: string | null;
 }
 
@@ -535,6 +560,7 @@ interface ManagedCountsDbRow {
   normal_count: number | null;
   missing_count: number | null;
   grey_count: number | null;
+  mismatch_count: number | null;
 }
 
 export async function getSyncOverview(db: D1DatabasePort): Promise<SyncOverview> {
@@ -552,7 +578,8 @@ export async function getSyncOverview(db: D1DatabasePort): Promise<SyncOverview>
         COUNT(*) AS total_count,
         SUM(CASE WHEN bucket = 'normal' THEN 1 ELSE 0 END) AS normal_count,
         SUM(CASE WHEN bucket = 'anomaly' AND anomaly_type = 'missing' THEN 1 ELSE 0 END) AS missing_count,
-        SUM(CASE WHEN bucket = 'anomaly' AND anomaly_type = 'grey' THEN 1 ELSE 0 END) AS grey_count
+        SUM(CASE WHEN bucket = 'anomaly' AND anomaly_type = 'grey' THEN 1 ELSE 0 END) AS grey_count,
+        SUM(CASE WHEN bucket = 'anomaly' AND anomaly_type = 'mismatch' THEN 1 ELSE 0 END) AS mismatch_count
       FROM managed_songs
     `).first<ManagedCountsDbRow>(),
   ]);
@@ -565,6 +592,7 @@ export async function getSyncOverview(db: D1DatabasePort): Promise<SyncOverview>
     normalCount: Number(counts?.normal_count ?? 0),
     missingCount: Number(counts?.missing_count ?? 0),
     greyCount: Number(counts?.grey_count ?? 0),
+    mismatchCount: Number(counts?.mismatch_count ?? 0),
     error: latest?.error_message ?? null,
   };
 }

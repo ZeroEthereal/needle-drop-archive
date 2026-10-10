@@ -35,6 +35,9 @@ import type {
 type UnknownRecord = Record<string, unknown>;
 type RequestOption = { url: string; init?: RequestInit };
 type RecoveryFilter = "all" | RecoveryKind;
+type LibraryFilter = "all" | "playable" | RecoveryKind;
+const anomalyLabels: Record<RecoveryKind, string> = { grey: "变灰", missing: "消失", mismatch: "错配" };
+
 type LibraryViewMode = "list" | "grid";
 type Toast = { message: string; tone: "good" | "bad" | "info" };
 
@@ -88,7 +91,7 @@ function normalizeArtists(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value
       .map((artist) => {
-        if (typeof artist === "string") return artist.trim();
+        if (typeof artist === "string") return artist;
         if (isRecord(artist)) return firstString(artist.name, artist.artistName);
         return undefined;
       })
@@ -114,6 +117,7 @@ function normalizeSong(value: unknown, forcedState?: SongState): SongRecord | nu
   let state: SongState = forcedState ?? "unknown";
   if (!forcedState) {
     if (value.grey === true || rawState === "grey" || rawState === "gray") state = "grey";
+    else if (rawState === "mismatch") state = "mismatch";
     else if (rawState === "missing" || rawState === "disappeared") state = "missing";
     else if (value.playable === true || rawState === "playable" || rawState === "normal") {
       state = "playable";
@@ -130,7 +134,7 @@ function normalizeSong(value: unknown, forcedState?: SongState): SongRecord | nu
 
   return {
     id,
-    title: firstString(value.title, value.name, value.songName) ?? "未命名歌曲",
+    title: [value.title, value.name, value.songName].find((entry) => typeof entry === "string" && entry.length > 0) as string ?? "未命名歌曲",
     artists: normalizeArtists(value.artists ?? value.artist ?? value.ar),
     album:
       firstString(
@@ -161,12 +165,14 @@ function normalizeRecovery(value: unknown): RecoveryItem | null {
   const kind: RecoveryKind =
     rawKind === "grey" || rawKind === "gray" || rawKind === "unavailable"
       ? "grey"
-      : "missing";
+      : rawKind === "mismatch" ? "mismatch" : "missing";
   const song = normalizeSong(value.song ?? value.track ?? value, kind);
   if (!song) return null;
   return {
     kind,
     song,
+    observedTitle: typeof value.observedTitle === "string" ? value.observedTitle : undefined,
+    observedArtists: Array.isArray(value.observedArtists) ? normalizeArtists(value.observedArtists) : undefined,
     lastNormalAt: firstString(value.lastNormalAt),
     confirmedAt: firstString(value.confirmedAt, value.detectedAt, value.createdAt),
     contexts: Array.isArray(value.contexts) ? value.contexts.flatMap((context) => {
@@ -174,7 +180,7 @@ function normalizeRecovery(value: unknown): RecoveryItem | null {
       const playlistId = firstString(context.playlistId);
       const playlistName = firstString(context.playlistName);
       const type = firstString(context.type);
-      if (!playlistId || !playlistName || (type !== "grey" && type !== "missing")) return [];
+      if (!playlistId || !playlistName || (type !== "grey" && type !== "missing" && type !== "mismatch")) return [];
       return [{ playlistId, playlistName, kind: type as RecoveryKind }];
     }) : [],
   };
@@ -280,6 +286,7 @@ function normalizeStatus(value: unknown): SyncStatus {
       normalCount: firstNumber(entry.normalCount) ?? 0,
       missingCount: firstNumber(entry.missingCount) ?? 0,
       greyCount: firstNumber(entry.greyCount) ?? 0,
+      mismatchCount: firstNumber(entry.mismatchCount) ?? 0,
       task: normalizeTask(entry.task), }];
   }) : [];
   let progress = firstNumber(record.progress, record.percent);
@@ -294,6 +301,7 @@ function normalizeStatus(value: unknown): SyncStatus {
     normalCount: firstNumber(record.normalCount),
     missingCount: firstNumber(record.missingCount, record.disappearedCount),
     greyCount: firstNumber(record.greyCount, record.grayCount),
+    mismatchCount: firstNumber(record.mismatchCount),
     sessionStatus: normalizeSessionStatus(
       record.sessionStatus ?? sessionRecord?.state ?? sessionRecord?.status,
     ),
@@ -302,6 +310,7 @@ function normalizeStatus(value: unknown): SyncStatus {
     recoveryTotal: firstNumber(record.recoveryTotal),
     recoveryGreyCount: firstNumber(record.recoveryGreyCount),
     recoveryMissingCount: firstNumber(record.recoveryMissingCount),
+    recoveryMismatchCount: firstNumber(record.recoveryMismatchCount),
     playlists,
     batch: normalizeBatch(record.batch),
     completedBatch: normalizeBatch(record.completedBatch),
@@ -651,7 +660,7 @@ function StatusBadge({ kind }: { kind: RecoveryKind }) {
   return (
     <span className={`status-badge status-${kind}`}>
       <i />
-      {kind === "missing" ? "已消失" : "已变灰"}
+      {`已${anomalyLabels[kind]}`}
     </span>
   );
 }
@@ -696,7 +705,7 @@ function VinylHero({ pending, unavailable }: { pending?: number; unavailable: bo
         <p className="micro-label">YOUR MUSIC REMEMBERS</p>
         <h2>{title}</h2>
         <p>
-          每日留下一张完整快照。歌曲消失或变灰时，它不会再无声无息地从记忆里离开。
+          每日留下一张完整快照。歌曲消失、变灰或错配时，它不会再无声无息地从记忆里离开。
         </p>
         <div className="hero-signal">
           <span className="live-dot" />
@@ -732,7 +741,7 @@ function RecoveryContexts({ contexts }: { contexts: RecoveryItem["contexts"] }) 
   const shown = expanded ? contexts : contexts.slice(0, 2);
   return <div className="recovery-contexts">
     {shown.map((context) => <span className={`context-tag kind-${context.kind}`}
-      key={context.playlistId}>{context.playlistName} · {context.kind === "missing" ? "消失" : "变灰"}</span>)}
+      key={context.playlistId}>{context.playlistName} · {anomalyLabels[context.kind]}</span>)}
     {!expanded && contexts.length > 2 ? <button type="button"
       onClick={() => setExpanded(true)}>另有 {contexts.length - 2} 个</button> : null}
     {expanded && contexts.length > 2 ? <button type="button"
@@ -781,8 +790,9 @@ function RecoveryView({
     () => ({
       missing: status?.recoveryMissingCount ?? items.filter((item) => item.contexts.some((c) => c.kind === "missing")).length,
       grey: status?.recoveryGreyCount ?? items.filter((item) => item.contexts.some((c) => c.kind === "grey")).length,
+      mismatch: status?.recoveryMismatchCount ?? items.filter((item) => item.contexts.some((c) => c.kind === "mismatch")).length,
     }),
-    [items, status?.recoveryGreyCount, status?.recoveryMissingCount],
+    [items, status?.recoveryGreyCount, status?.recoveryMissingCount, status?.recoveryMismatchCount],
   );
   const visible = useMemo(
     () =>
@@ -797,7 +807,7 @@ function RecoveryView({
       <PageHeading
         eyebrow="RECOVERY QUEUE"
         title="待找回"
-        description="这里只收纳已经确认的异常：仍在歌单但不可播放的是变灰，彻底离开歌单的是消失。"
+        description="这里只收纳已经确认的异常：仍在歌单但不可播放的是变灰，离开歌单的是消失，ID 不变但歌名或歌手变化的是错配。"
         right={<span className="heading-count">{loadState === "ready" ? formatNumber(total ?? visible.length) : "—"} 首</span>}
       />
       <div className="recovery-explainer">
@@ -815,6 +825,7 @@ function RecoveryView({
             { value: "all", label: "全部", count: pending },
             { value: "grey", label: "变灰", count: counts.grey },
             { value: "missing", label: "消失", count: counts.missing },
+            { value: "mismatch", label: "错配", count: counts.mismatch },
           ]}
         />
         <label className="playlist-filter-label">歌单
@@ -831,7 +842,7 @@ function RecoveryView({
         <EmptyState
           unavailable
           title="守护服务还没有传来数据"
-          body="界面已经就位。完成网易云授权并建立第一次快照后，真实的消失与变灰记录会出现在这里。"
+          body="界面已经就位。完成网易云授权并建立第一次快照后，真实的消失、变灰与错配记录会出现在这里。"
           action={
             <button type="button" className="primary-button" onClick={onGoSync}>
               去同步状态 <span>→</span>
@@ -866,6 +877,11 @@ function RecoveryView({
                   <h3>{item.song.title}</h3>
                   <p>{artistLine(item.song)}</p>
                   <small>{item.song.album}</small>
+                  {item.kind === "mismatch" && item.observedTitle !== undefined ?
+                    <div className="mismatch-comparison">
+                      <p><span>原资料</span><span>{item.song.title} ／ {artistLine(item.song)}</span></p>
+                      <p><span>当前资料</span><span>{item.observedTitle} ／ {item.observedArtists?.join(" / ") || "未知歌手"}</span></p>
+                    </div> : null}
                 </div>
               </div>
               <div><StatusBadge kind={item.kind} /></div>
@@ -916,8 +932,9 @@ function playlistDisplayName(playlist: MonitoredPlaylistStatus): string {
   return playlist.specialType === 5 ? "我喜欢的音乐" : playlist.name;
 }
 
-function PlaylistPulse({ playlist, disabled, onSync }: {
+function PlaylistPulse({ playlist, disabled, onSync, filter, onFilterChange }: {
   playlist?: MonitoredPlaylistStatus; disabled: boolean; onSync: () => void;
+  filter: LibraryFilter; onFilterChange: (value: LibraryFilter) => void;
 }) {
   const task = playlist?.task;
   const playlistName = playlist ? playlistDisplayName(playlist) : "歌单歌曲";
@@ -946,16 +963,25 @@ function PlaylistPulse({ playlist, disabled, onSync }: {
       })}</div>
       {task?.error && task.status === "failed" ? <div className="sync-error"><strong>这个歌单同步失败</strong><p>{task.error}</p></div> : null}
     </section>
-    <section className="sync-metrics">
-      <article className="metric-card accent-cyan"><p>{playlistName}</p><strong>{formatNumber(playlist?.totalSongCount)}</strong><span>正常、变灰与消失的总和</span></article>
-      <article className="metric-card accent-lime"><p>正常播放</p><strong>{formatNumber(playlist?.normalCount)}</strong><span>本轮确认可以正常播放</span></article>
-      <article className="metric-card accent-violet"><p>变灰</p><strong>{formatNumber(playlist?.greyCount)}</strong><span>仍在歌单但不可播放</span></article>
-      <article className="metric-card accent-red"><p>消失</p><strong>{formatNumber(playlist?.missingCount)}</strong><span>被用户删除或被官方下架</span></article>
+    <section className="sync-metrics" role="group" aria-label="歌单状态筛选">
+      {([
+        { value: "all", label: "全部", count: playlist?.totalSongCount, accent: "cyan", description: "正常、变灰、消失与错配的总和" },
+        { value: "playable", label: "正常", count: playlist?.normalCount, accent: "lime", description: "资料一致且可以播放" },
+        { value: "grey", label: "变灰", count: playlist?.greyCount, accent: "violet", description: "仍在歌单但不可播放" },
+        { value: "missing", label: "消失", count: playlist?.missingCount, accent: "red", description: "已经离开这个歌单" },
+        { value: "mismatch", label: "错配", count: playlist?.mismatchCount, accent: "amber", description: "可播放但歌名或歌手变化" },
+      ] as const).map((item) => <button type="button" key={item.value}
+        className={`metric-card accent-${item.accent} ${filter === item.value ? "is-active" : ""}`}
+        aria-pressed={filter === item.value} disabled={!playlist} onClick={() => onFilterChange(item.value)}>
+        <span>{item.label}</span><strong>{formatNumber(item.count)}</strong><span>{item.description}</span>
+      </button>)}
     </section>
   </>;
 }
 
 function LikesView({
+  filter,
+  onFilterChange,
   loadState,
   songs,
   total,
@@ -972,6 +998,8 @@ function LikesView({
   syncDisabled,
   onSyncPlaylist,
 }: {
+  filter: LibraryFilter;
+  onFilterChange: (value: LibraryFilter) => void;
   loadState: LoadState;
   songs: SongRecord[];
   total?: number;
@@ -996,9 +1024,9 @@ function LikesView({
 
   return (
     <div className="view-stack view-likes">
-      <PlaylistPulse playlist={playlist} disabled={syncDisabled} onSync={onSyncPlaylist} />
+      <PlaylistPulse playlist={playlist} disabled={syncDisabled} onSync={onSyncPlaylist} filter={filter} onFilterChange={onFilterChange} />
       <div className="toolbar glass-panel">
-        <p className="toolbar-note">正常歌曲保持安静，异常歌曲会标出“已变灰”或“已消失”。</p>
+        <p className="toolbar-note">正常歌曲保持安静，异常歌曲会标出“已变灰”、“已消失”或“已错配”。</p>
         <div className="library-tools">
           <SearchBox value={query} onChange={setQuery} placeholder="在歌单里搜索" />
           <div className="view-switch" role="group" aria-label="歌单视图">
@@ -1023,8 +1051,8 @@ function LikesView({
       ) : null}
       {loadState === "ready" && filtered.length === 0 ? (
         <EmptyState
-          title={songs.length ? "没有符合条件的歌曲" : "歌单快照还是空的"}
-          body={songs.length ? "换个关键词或筛选条件试试。" : "下一次成功同步会把当前歌单歌曲带到这里。"}
+          title={query || filter !== "all" ? "没有符合条件的歌曲" : "歌单快照还是空的"}
+          body={query || filter !== "all" ? "换个关键词或筛选条件试试。" : "下一次成功同步会把当前歌单歌曲带到这里。"}
         />
       ) : null}
       {loadState === "ready" && filtered.length ? (
@@ -1036,7 +1064,7 @@ function LikesView({
           ) : null}
           <div className={viewMode === "grid" ? "likes-cover-grid" : "likes-list"} role="list">
             {filtered.map((song) => viewMode === "grid" ? (
-              <article className={`like-cover-card ${song.state === "grey" ? "is-grey" : song.state === "missing" ? "is-missing" : ""}`} role="listitem" key={song.id}>
+              <article className={`like-cover-card ${song.state === "grey" ? "is-grey" : song.state === "missing" ? "is-missing" : song.state === "mismatch" ? "is-mismatch" : ""}`} role="listitem" key={song.id}>
                 <a href={song.neteaseUrl} target="_blank" rel="noreferrer" aria-label={`在网易云打开 ${song.title}`}>
                   <SongCover song={song} size="large" />
                   <span className="cover-open" aria-hidden="true">↗</span>
@@ -1045,6 +1073,7 @@ function LikesView({
                 <p>{artistLine(song)}</p>
                 {song.state === "grey" ? <span className="library-state state-grey"><i />已变灰</span> : null}
                 {song.state === "missing" ? <span className="library-state state-missing"><i />已消失</span> : null}
+                {song.state === "mismatch" ? <span className="library-state state-mismatch"><i />已错配</span> : null}
               </article>
             ) : (
               <article className="like-row likes-grid" role="listitem" key={song.id}>
@@ -1055,7 +1084,7 @@ function LikesView({
                 <p className="album-cell">{song.album}</p>
                 <time>{formatDateTime(song.firstSeenAt)}</time>
                 <time>{formatDateTime(song.lastConfirmedAt)}</time>
-                {song.state === "grey" ? <span className="library-state state-grey"><i />已变灰</span> : song.state === "missing" ? <span className="library-state state-missing"><i />已消失</span> : <span />}
+                {song.state === "grey" ? <span className="library-state state-grey"><i />已变灰</span> : song.state === "missing" ? <span className="library-state state-missing"><i />已消失</span> : song.state === "mismatch" ? <span className="library-state state-mismatch"><i />已错配</span> : <span />}
                 {song.neteaseUrl ? (
                   <a className="song-open" href={song.neteaseUrl} target="_blank" rel="noreferrer" aria-label={`在网易云打开 ${song.title}`}>↗</a>
                 ) : <span />}
@@ -1369,6 +1398,7 @@ export function MusicVault() {
   const [likesState, setLikesState] = useState<LoadState>("loading");
   const [libraryView, setLibraryView] = useState<LibraryViewMode>("list");
   const [likesQuery, setLikesQuery] = useState("");
+  const [likesFilter, setLikesFilter] = useState<LibraryFilter>("all");
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string>();
   const [mobilePlaylistOpen, setMobilePlaylistOpen] = useState(false);
   const [likesTotal, setLikesTotal] = useState<number>();
@@ -1500,6 +1530,7 @@ export function MusicVault() {
     else setLikesState("loading");
     const params = new URLSearchParams({ limit: String(LIKES_PAGE_SIZE) });
     params.set("playlistId", selectedPlaylistId);
+    params.set("state", likesFilter);
     if (likesSearch.trim()) params.set("query", likesSearch.trim());
     if (cursor) params.set("cursor", cursor);
     try {
@@ -1525,7 +1556,7 @@ export function MusicVault() {
     } finally {
       setLoadingMore(false);
     }
-  }, [likesSearch, notify, selectedPlaylistId]);
+  }, [likesSearch, likesFilter, notify, selectedPlaylistId]);
 
   const loadStatus = useCallback(async (showLoading = false) => {
     if (showLoading) setStatusState("loading");
@@ -1854,6 +1885,7 @@ export function MusicVault() {
     setLikesTotal(undefined);
     setLikesQuery("");
     setLoadingMore(false);
+    setLikesFilter("all");
     setSelectedPlaylistId(id);
     setView("likes");
     setMobilePlaylistOpen(false);
@@ -1944,9 +1976,16 @@ export function MusicVault() {
           ) : null}
           {view === "likes" ? (
             <LikesView
+              filter={likesFilter}
+              onFilterChange={(next) => {
+                if (next === likesFilter) return;
+                likesRequest.current += 1;
+                setSongs([]); setLikesCursor(undefined); setLikesTotal(undefined);
+                setLoadingMore(false); setLikesState("loading"); setLikesFilter(next);
+              }}
               loadState={likesState}
               songs={songs}
-              total={likesTotal ?? currentPlaylist?.totalSongCount}
+              total={likesTotal}
               viewMode={libraryView}
               setViewMode={setLibraryView}
               query={likesQuery}

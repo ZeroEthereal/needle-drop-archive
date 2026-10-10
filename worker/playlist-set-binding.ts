@@ -7,6 +7,7 @@ import { getInstanceConfig } from "./instance-config";
 import { loadNeteaseSession } from "./session-store";
 import { snapshotForStateMachine } from "./sync-runner";
 import { verifySnapshotAnomalies } from "./snapshot-verifier";
+import { encodeSongUpserts, loadSongMetadata, propagateSourceSql, stagedSongMetadata, upsertSongsSql } from "../lib/sync/song-storage";
 
 export interface PlaylistSelection {
   id: string; name: string; coverUrl: string | null; ownerUid: string;
@@ -41,10 +42,11 @@ export async function preparePlaylistBaseline(env: Env, bindingId: string, playl
   const selections = pendingSelection(pending).playlists;
   if (!selections.some((playlist) => playlist.id === playlistId))
     throw new Error("Playlist is not part of this selection");
-  const existing = await env.DB.prepare(`SELECT playlist_id FROM pending_playlist_baselines
+  const existing = await env.DB.prepare(`SELECT playlist_id, song_json FROM pending_playlist_baselines
     WHERE binding_id = ? AND playlist_id = ?`).bind(bindingId, playlistId)
-    .first<{ playlist_id: string }>();
-  if (existing) return { playlistId, staged: true };
+    .first<{ playlist_id: string; song_json: string }>();
+  if (existing && (JSON.parse(existing.song_json) as Array<{ sourceState?: string }>)
+    .every((song) => song.sourceState !== undefined)) return { playlistId, staged: true };
   const stored = await loadNeteaseSession(env, pending.session_id);
   if (!stored || stored.uid !== pending.account_uid) throw new Error("Pending NetEase session is unavailable");
   const client = new NeteaseClient();
@@ -56,15 +58,23 @@ export async function preparePlaylistBaseline(env: Env, bindingId: string, playl
   });
   if (account.playlist.trackCount <= 0)
     throw new Error("Empty playlists cannot establish a monitoring baseline");
-  const verified = await verifySnapshotAnomalies(client, stored.session, account,
-    { managedSongs: [] });
+  const config = await getInstanceConfig(env);
+  const keepOriginals = config.accountUid === pending.account_uid && !pendingSelection(pending).freshBaseline;
+  const prior = await env.DB.prepare(`SELECT song_json FROM pending_playlist_baselines
+    WHERE binding_id = ? AND playlist_id <> ? ORDER BY verified_at, playlist_id`)
+    .bind(bindingId, playlistId).all<{ song_json: string }>();
+  if (!prior.success) throw new Error(prior.error || "Could not read staged song originals");
+  const state = { managedSongs: [], songs: stagedSongMetadata(
+    keepOriginals ? await loadSongMetadata(env.DB) : [], (prior.results ?? []).map((row) => row.song_json)) };
+  const verified = await verifySnapshotAnomalies(client, stored.session, account, state);
   const snapshot = assertCompleteSnapshot(snapshotForStateMachine(verified));
-  const plan = planSnapshotSync(snapshot, { managedSongs: [] }, false);
+  const plan = planSnapshotSync(snapshot, state, false);
   const result = await env.DB.prepare(`INSERT INTO pending_playlist_baselines
     (binding_id, playlist_id, song_json, state_json, verified_at)
-    VALUES (?, ?, ?, ?, ?) ON CONFLICT(binding_id, playlist_id) DO NOTHING`)
+    VALUES (?, ?, ?, ?, ?) ON CONFLICT(binding_id, playlist_id) DO UPDATE SET
+      song_json = excluded.song_json, state_json = excluded.state_json, verified_at = excluded.verified_at`)
     .bind(bindingId, playlistId,
-      JSON.stringify(plan.songUpserts.map((song) => ({ ...song, artists: JSON.stringify(song.artists) }))),
+      encodeSongUpserts(plan.songUpserts),
       JSON.stringify(plan.managedSongUpserts), plan.observedAt).run();
   if (!result.success) throw new Error(result.error || "Could not stage playlist baseline");
   return { playlistId, staged: true, songCount: plan.result.currentSongCount };
@@ -106,13 +116,15 @@ async function activateSelection(env: Env, pending: PendingSet, selections: Play
   const currentPlaylists = replacingAccount || freshBaseline ? [] : await listMonitoredPlaylists(env.DB);
   const preserved = new Set(currentPlaylists.map((item) => item.id));
   const added = selections.filter((item) => !preserved.has(item.id));
-  const stageResult = await env.DB.prepare(`SELECT playlist_id, song_json, state_json
+  const stageResult = await env.DB.prepare(`SELECT playlist_id, song_json, state_json, verified_at
     FROM pending_playlist_baselines WHERE binding_id = ?`).bind(pending.id)
-    .all<{ playlist_id: string; song_json: string; state_json: string }>();
+    .all<{ playlist_id: string; song_json: string; state_json: string; verified_at: string }>();
   if (!stageResult.success) throw new Error(stageResult.error || "Could not read staged baselines");
   const staged = new Map((stageResult.results ?? []).map((row) => [row.playlist_id, row]));
   if (added.some((item) => !staged.has(item.id)))
     throw new Error("A selected playlist has no complete staged baseline");
+  const addedByObservation = [...added].sort((left, right) =>
+    staged.get(left.id)!.verified_at.localeCompare(staged.get(right.id)!.verified_at));
   const candidate = selections.map((selection) => {
     const old = currentPlaylists.find((item) => item.id === selection.id);
     const baseline = staged.get(selection.id);
@@ -124,6 +136,7 @@ async function activateSelection(env: Env, pending: PendingSet, selections: Play
       normalCount: old?.normalCount ?? stagedStates.filter((state) => state.bucket === "normal").length,
       missingCount: old?.missingCount ?? stagedStates.filter((state) => state.anomalyType === "missing").length,
       greyCount: old?.greyCount ?? stagedStates.filter((state) => state.anomalyType === "grey").length,
+      mismatchCount: old?.mismatchCount ?? stagedStates.filter((state) => state.anomalyType === "mismatch").length,
       baselineEstablished: true, boundAt: old?.boundAt ?? new Date().toISOString() };
   });
   const primary = defaultPlaylist(candidate);
@@ -163,17 +176,12 @@ async function activateSelection(env: Env, pending: PendingSet, selections: Play
         item.owned ? 1 : 0, item.specialType, item.listOrder, now,
         nextVersion, pending.account_uid));
   }
-  for (const item of added) {
+  if (replacingAccount || freshBaseline) statements.push(env.DB.prepare(`DELETE FROM songs WHERE NOT EXISTS
+    (SELECT 1 FROM playlist_song_states WHERE song_id = songs.id) AND ${guard}`)
+    .bind(nextVersion, pending.account_uid));
+  for (const item of addedByObservation) {
     const row = staged.get(item.id)!;
-    statements.push(env.DB.prepare(`INSERT INTO songs
-      (id, title, artists, album, cover_url, netease_url, created_at, updated_at)
-      SELECT json_extract(value, '$.id'), json_extract(value, '$.title'),
-        json_extract(value, '$.artists'), json_extract(value, '$.album'),
-        json_extract(value, '$.coverUrl'), json_extract(value, '$.neteaseUrl'),
-        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM json_each(?) WHERE ${guard}
-      ON CONFLICT(id) DO UPDATE SET title = excluded.title, artists = excluded.artists,
-        album = excluded.album, cover_url = excluded.cover_url,
-        netease_url = excluded.netease_url, updated_at = CURRENT_TIMESTAMP`)
+    statements.push(env.DB.prepare(upsertSongsSql(guard))
       .bind(row.song_json, nextVersion, pending.account_uid));
     statements.push(env.DB.prepare(`INSERT INTO playlist_song_states
       (playlist_id, song_id, bucket, anomaly_type, first_seen_at, last_seen_at,
@@ -185,6 +193,12 @@ async function activateSelection(env: Env, pending: PendingSet, selections: Play
         json_extract(value, '$.createdAt'), json_extract(value, '$.updatedAt')
       FROM json_each(?) WHERE ${guard}`)
       .bind(item.id, row.state_json, nextVersion, pending.account_uid));
+  }
+  for (const item of addedByObservation) {
+    const row = staged.get(item.id)!;
+    const observedAt = (JSON.parse(row.state_json) as Array<{ lastConfirmedAt: string }>)[0]?.lastConfirmedAt ?? now;
+    statements.push(env.DB.prepare(propagateSourceSql(guard)).bind(row.song_json,
+      observedAt, observedAt, observedAt, observedAt, observedAt, nextVersion, pending.account_uid));
   }
   if (pending.session_id !== "primary") {
     statements.push(env.DB.prepare(`INSERT INTO netease_sessions

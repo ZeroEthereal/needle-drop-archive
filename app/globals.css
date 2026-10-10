@@ -1593,7 +1593,7 @@ input:focus-visible {
 
 .sync-metrics {
   display: grid;
-  grid-template-columns: repeat(4,minmax(0,1fr));
+  grid-template-columns: repeat(5,minmax(0,1fr));
   gap: 14px;
 }
 
@@ -2369,3 +2369,16 @@ input:focus-visible {
   .particle-field,
   .noise-layer { display: none; }
 }
+
+/* Song mismatch evidence and accessible playlist status filters. */
+.status-mismatch, .library-state.state-mismatch { color: var(--amber); background: rgba(255,190,90,.12); }
+.context-tag.kind-mismatch { color: var(--amber); background: rgba(255,190,90,.12); }
+.mismatch-comparison { margin-top: 9px; padding: 8px 10px; border-left: 2px solid var(--amber); background: rgba(255,190,90,.06); }
+.mismatch-comparison p { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 3px 0; font-size: 11px; }
+.mismatch-comparison p > span:first-child { color: var(--amber); flex-shrink: 0; }
+.mismatch-comparison p > span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+button.metric-card { text-align: left; font: inherit; cursor: pointer; min-height: 112px; }
+button.metric-card.is-active { border-color: var(--accent); background: rgba(255,255,255,.05); }
+button.metric-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+button.metric-card:hover { border-color: var(--accent); }
+.like-cover-card.is-mismatch .song-cover-large { outline: 1px solid var(--amber); }

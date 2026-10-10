@@ -56,10 +56,16 @@ const managed = (songId, bucket = "normal", anomalyType = null) => ({
   updatedAt: "2026-08-16T01:00:00.000Z",
 });
 
-function fakeClient({ secondTrackIds = [], availability = [], playlistError, playbackError } = {}) {
+function fakeClient({ secondTrackIds = [], availability = [], metadata = [], playlistError, playbackError, metadataError } = {}) {
   return {
     playlistCalls: 0,
     playbackCalls: 0,
+    metadataCalls: 0,
+    async getSongMetadata() {
+      this.metadataCalls += 1;
+      if (metadataError) throw metadataError;
+      return { songs: metadata };
+    },
     async getPlaylistDetail() {
       this.playlistCalls += 1;
       if (playlistError) throw playlistError;
@@ -140,4 +146,48 @@ test("no extra upstream request is made when no new anomaly is suspected", async
   });
   assert.equal(client.playlistCalls, 0);
   assert.equal(client.playbackCalls, 0);
+});
+
+const identityState = (observedTitle = null) => ({ managedSongs: [managed("1")], songs: [{
+  id: "1", title: "Original", artists: ["Artist"], album: "Album", coverUrl: null,
+  observedTitle, observedArtists: observedTitle === null ? null : ["Artist"],
+}] });
+
+test("stable changed metadata is rechecked in the same sync", async () => {
+  const snapshot = account([{ id: "1", playable: true }]);
+  const client = fakeClient({ metadata: snapshot.songs });
+  assert.deepEqual(await verifySnapshotAnomalies(client, session, snapshot, identityState()), snapshot);
+  assert.equal(client.metadataCalls, 1);
+});
+
+test("changing or incomplete metadata aborts the whole observation", async () => {
+  const snapshot = account([{ id: "1", playable: true }]);
+  for (const metadata of [[], snapshot.songs.map((item) => ({ ...item, song: { ...item.song, title: "Changed again" } }))]) {
+    await assert.rejects(verifySnapshotAnomalies(fakeClient({ metadata }), session, snapshot, identityState()),
+      (error) => error.kind === "incomplete_response");
+  }
+});
+
+test("metadata errors propagate and grey observations do not record or recheck identity", async () => {
+  const snapshot = account([{ id: "1", playable: true }]);
+  const error = new NeteaseError("network", "metadata failure");
+  await assert.rejects(verifySnapshotAnomalies(fakeClient({ metadataError: error }), session, snapshot, identityState()), error);
+  const grey = fakeClient({ availability: [{ id: "1", playable: false, code: 404, reason: "no_url" }] });
+  await verifySnapshotAnomalies(grey, session, account([{ id: "1", playable: false }]), identityState("Wrong"));
+  assert.equal(grey.metadataCalls, 0);
+});
+
+test("restoration to the original identity is rechecked before clearing wrong metadata", async () => {
+  const snapshot = account([{ id: "1", playable: true }]); snapshot.songs[0].song.title = "Original";
+  const client = fakeClient({ metadata: snapshot.songs });
+  await verifySnapshotAnomalies(client, session, snapshot, identityState("Wrong"));
+  assert.equal(client.metadataCalls, 1);
+});
+
+test("grey and mismatch turning missing also require a complete second membership read", async () => {
+  for (const type of ["grey", "mismatch"]) {
+    const client = fakeClient({ secondTrackIds: [] });
+    await verifySnapshotAnomalies(client, session, account([]), { managedSongs: [managed("1", "anomaly", type)] });
+    assert.equal(client.playlistCalls, 1);
+  }
 });

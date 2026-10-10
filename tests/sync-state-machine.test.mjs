@@ -39,7 +39,9 @@ function snapshot(observedAt, songs) {
 function apply(state, plan) {
   const managed = new Map(state.managedSongs.map((row) => [row.songId, row]));
   for (const row of plan.managedSongUpserts) managed.set(row.songId, row);
-  return { managedSongs: [...managed.values()] };
+  const songs = new Map((state.songs ?? []).map((row) => [row.id, row]));
+  for (const row of plan.songUpserts) songs.set(row.id, row);
+  return { managedSongs: [...managed.values()], songs: [...songs.values()] };
 }
 
 function sync(state, observedAt, songs) {
@@ -106,24 +108,24 @@ test("a confirmed anomaly recovers after one playable observation", () => {
   assert.deepEqual(turn.plan.result.automaticallyRecoveredSongIds, [songA.id]);
 });
 
-test("confirmed grey remains grey after the favorite disappears", () => {
+test("confirmed grey becomes missing after the favorite disappears", () => {
   let state = { managedSongs: [] };
   ({ state } = sync(state, "2026-07-15T01:00:00Z", [songA, stableSong]));
   ({ state } = sync(state, "2026-07-16T01:00:00Z", [{ ...songA, accountPlayable: false }, stableSong]));
   ({ state } = sync(state, "2026-07-17T01:00:00Z", [stableSong]));
 
   assert.equal(managed(state).bucket, "anomaly");
-  assert.equal(managed(state).anomalyType, "grey");
+  assert.equal(managed(state).anomalyType, "missing");
 });
 
-test("confirmed missing remains missing when it reappears but is unplayable", () => {
+test("confirmed missing becomes grey when it reappears but is unplayable", () => {
   let state = { managedSongs: [] };
   ({ state } = sync(state, "2026-07-15T01:00:00Z", [songA, stableSong]));
   ({ state } = sync(state, "2026-07-16T01:00:00Z", [stableSong]));
   ({ state } = sync(state, "2026-07-17T01:00:00Z", [{ ...songA, accountPlayable: false }, stableSong]));
 
   assert.equal(managed(state).bucket, "anomaly");
-  assert.equal(managed(state).anomalyType, "missing");
+  assert.equal(managed(state).anomalyType, "grey");
 });
 
 test("an anomalous old id and a replacement id remain independent", () => {

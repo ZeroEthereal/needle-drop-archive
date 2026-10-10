@@ -190,10 +190,10 @@ app.get("/api/recovery", async (context) => {
   const url = new URL(context.req.url);
   const { offset, limit } = pagination(url);
   const requestedType = url.searchParams.get("type");
-  if (requestedType && requestedType !== "all" && requestedType !== "missing" && requestedType !== "grey") {
-    throw new ApiError(400, "INVALID_RECOVERY_TYPE", "type 只能是 missing 或 grey。");
+  if (requestedType && requestedType !== "all" && requestedType !== "missing" && requestedType !== "grey" && requestedType !== "mismatch") {
+    throw new ApiError(400, "INVALID_RECOVERY_TYPE", "type 只能是 missing、grey 或 mismatch。");
   }
-  const type = requestedType === "missing" || requestedType === "grey" ? requestedType : undefined;
+  const type = requestedType === "missing" || requestedType === "grey" || requestedType === "mismatch" ? requestedType : undefined;
   const requestedPlaylist = url.searchParams.get("playlistId");
   const monitored = await listMonitoredPlaylists(context.env.DB);
   if (requestedPlaylist && requestedPlaylist !== "all" && !monitored.some((p) => p.id === requestedPlaylist))
@@ -242,7 +242,13 @@ app.get("/api/likes", async (context) => {
   const playlistId = url.searchParams.get("playlistId") ?? defaultPlaylist(playlists)?.id;
   if (!playlistId || !playlists.some((playlist) => playlist.id === playlistId))
     throw new ApiError(400, "PLAYLIST_NOT_MONITORED", "请选择一个已监控歌单。");
+  const requestedState = url.searchParams.get("state");
+  if (requestedState && !["all", "playable", "grey", "missing", "mismatch"].includes(requestedState))
+    throw new ApiError(400, "INVALID_SONG_STATE", "歌曲状态无效。");
+  const state = requestedState && requestedState !== "all"
+    ? requestedState as "playable" | "grey" | "missing" | "mismatch" : undefined;
   const page = await listPlaylistSongs(context.env.DB, playlistId, {
+    state,
     query: searchQuery(url),
     offset,
     limit,
@@ -283,9 +289,10 @@ app.get("/api/sync/status", async (context) => {
     latestBatchStatus(context.env),
     context.env.DB.prepare(`SELECT COUNT(DISTINCT song_id) AS total,
       COUNT(DISTINCT CASE WHEN anomaly_type = 'grey' THEN song_id END) AS grey,
-      COUNT(DISTINCT CASE WHEN anomaly_type = 'missing' THEN song_id END) AS missing
+      COUNT(DISTINCT CASE WHEN anomaly_type = 'missing' THEN song_id END) AS missing,
+      COUNT(DISTINCT CASE WHEN anomaly_type = 'mismatch' THEN song_id END) AS mismatch
       FROM playlist_song_states WHERE bucket = 'anomaly'`)
-      .first<{ total: number; grey: number; missing: number }>(),
+      .first<{ total: number; grey: number; missing: number; mismatch: number }>(),
     context.env.DB.prepare(`SELECT * FROM (
       SELECT t.*, ROW_NUMBER() OVER (PARTITION BY t.playlist_id
         ORDER BY datetime(b.created_at) DESC, b.id DESC) AS rank
@@ -305,6 +312,11 @@ app.get("/api/sync/status", async (context) => {
 
   return context.json({
     ...overview,
+    totalSongCount: selected?.totalSongCount ?? 0,
+    normalCount: selected?.normalCount ?? 0,
+    greyCount: selected?.greyCount ?? 0,
+    missingCount: selected?.missingCount ?? 0,
+    mismatchCount: selected?.mismatchCount ?? 0,
     state: queued ? "queued" : batchState ?? (config.bindingVersion <= 1 ? overview.state : "idle"),
     phase: queued ? "queued" : batchState === "running"
       ? String(batch?.tasks.find((task) => task.playlist_id === batch.batch.current_playlist_id)?.phase ?? "validate_session")
@@ -346,7 +358,7 @@ app.get("/api/sync/status", async (context) => {
       ownerUid: item.ownerUid, ownerName: item.ownerName, owned: item.owned,
       specialType: item.specialType, listOrder: item.listOrder,
       boundAt: item.boundAt, totalSongCount: item.totalSongCount,
-      normalCount: item.normalCount, missingCount: item.missingCount,
+      normalCount: item.normalCount, missingCount: item.missingCount, mismatchCount: item.mismatchCount,
       greyCount: item.greyCount,
       task: playlistTasks.results?.find((task) => task.playlist_id === item.id) ?? null,
     })),
@@ -357,6 +369,7 @@ app.get("/api/sync/status", async (context) => {
     recoveryTotal: Number(recoveryCounts?.total ?? 0),
     recoveryGreyCount: Number(recoveryCounts?.grey ?? 0),
     recoveryMissingCount: Number(recoveryCounts?.missing ?? 0),
+    recoveryMismatchCount: Number(recoveryCounts?.mismatch ?? 0),
     binding: pending ? {
       id: pending.id,
       state: pending.status,

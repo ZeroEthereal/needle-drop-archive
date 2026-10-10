@@ -53,6 +53,7 @@ class TestD1 {
       CREATE TABLE songs (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, artists TEXT NOT NULL,
         album TEXT, cover_url TEXT, netease_url TEXT NOT NULL,
+        observed_title TEXT, observed_artists TEXT,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE TABLE managed_songs (
@@ -67,6 +68,7 @@ class TestD1 {
         current_song_count INTEGER NOT NULL DEFAULT 0, new_count INTEGER NOT NULL DEFAULT 0,
         confirmed_missing_count INTEGER NOT NULL DEFAULT 0,
         confirmed_grey_count INTEGER NOT NULL DEFAULT 0,
+        confirmed_mismatch_count INTEGER NOT NULL DEFAULT 0,
         auto_recovered_count INTEGER NOT NULL DEFAULT 0,
         error_code TEXT, error_message TEXT, binding_version INTEGER,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL

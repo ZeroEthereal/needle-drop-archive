@@ -1,4 +1,4 @@
-export type RecoveryType = "missing" | "grey";
+export type RecoveryType = "missing" | "grey" | "mismatch";
 export type ManagedBucket = "normal" | "anomaly";
 
 export interface SnapshotSong {
@@ -34,19 +34,41 @@ export interface ManagedSongState {
 
 export interface SyncState {
   managedSongs: ManagedSongState[];
+  songs?: SongMetadata[];
+}
+
+export interface SongMetadata {
+  id: string;
+  title: string;
+  artists: string[];
+  album: string | null;
+  coverUrl: string | null;
+  neteaseUrl?: string;
+  observedTitle: string | null;
+  observedArtists: string[] | null;
+}
+
+export interface SongUpsert extends SnapshotSong, SongMetadata {
+  sourceState: "normal" | "grey" | "mismatch";
+}
+
+export function sameSongIdentity(left: Pick<SnapshotSong, "title" | "artists">,
+  right: Pick<SnapshotSong, "title" | "artists">): boolean {
+  return left.title === right.title && JSON.stringify(left.artists) === JSON.stringify(right.artists);
 }
 
 export interface SyncPlan {
   observedAt: string;
   shanghaiDate: string;
   baselineEstablished: boolean;
-  songUpserts: SnapshotSong[];
+  songUpserts: SongUpsert[];
   managedSongUpserts: ManagedSongState[];
   result: {
     currentSongCount: number;
     newCount: number;
     confirmedMissingCount: number;
     confirmedGreyCount: number;
+    confirmedMismatchCount: number;
     autoRecoveredCount: number;
     newlyConfirmedSongIds: string[];
     automaticallyRecoveredSongIds: string[];
@@ -126,29 +148,6 @@ export function assertCompleteSnapshot(
   return snapshot;
 }
 
-function clearAnomaly(row: ManagedSongState): ManagedSongState {
-  return {
-    ...row,
-    bucket: "normal",
-    anomalyType: null,
-    confirmedAt: null,
-  };
-}
-
-function confirmAnomaly(
-  row: ManagedSongState,
-  type: RecoveryType,
-  observedAt: string,
-): ManagedSongState {
-  return {
-    ...row,
-    bucket: "anomaly",
-    anomalyType: type,
-    confirmedAt: observedAt,
-    updatedAt: observedAt,
-  };
-}
-
 function sameManagedSong(a: ManagedSongState, b: ManagedSongState): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -175,67 +174,79 @@ export function planSnapshotSync(
     state.managedSongs.map((row) => [row.songId, { ...row }]),
   );
   const snapshotById = new Map(snapshot.songs.map((song) => [song.id, song]));
+  const metadataById = new Map((state.songs ?? []).map((song) => [song.id, song]));
+  const songUpserts: SongUpsert[] = snapshot.songs.map((song) => {
+    const stored = metadataById.get(song.id);
+    const sourceState = !song.accountPlayable ? "grey" :
+      stored && !sameSongIdentity(stored, song) ? "mismatch" : "normal";
+    return {
+      ...song,
+      title: stored?.title ?? song.title,
+      artists: stored?.artists ?? song.artists,
+      album: sourceState !== "normal" && stored ? stored.album : song.album,
+      coverUrl: sourceState !== "normal" && stored ? stored.coverUrl : song.coverUrl,
+      neteaseUrl: stored?.neteaseUrl ?? song.neteaseUrl ??
+        `https://music.163.com/#/song?id=${encodeURIComponent(song.id)}`,
+      observedTitle: sourceState === "grey" ? stored?.observedTitle ?? null :
+        sourceState === "mismatch" ? song.title : null,
+      observedArtists: sourceState === "grey" ? stored?.observedArtists ?? null :
+        sourceState === "mismatch" ? [...song.artists] : null,
+      sourceState,
+    };
+  });
   const newlyConfirmedSongIds: string[] = [];
   const automaticallyRecoveredSongIds: string[] = [];
   let confirmedMissingCount = 0;
   let confirmedGreyCount = 0;
+  let confirmedMismatchCount = 0;
   let newCount = 0;
 
-  for (const song of snapshot.songs) {
+  for (const song of songUpserts) {
     const existing = managed.get(song.id);
-    if (!existing) {
-      let created: ManagedSongState = {
+    const type = song.sourceState === "normal" ? null : song.sourceState;
+    const next: ManagedSongState = {
+      ...(existing ?? {
         songId: song.id,
         bucket: "normal",
         anomalyType: null,
         firstSeenAt: observedAt,
-        lastSeenAt: observedAt,
-        lastConfirmedAt: observedAt,
-        lastPlayableAt: song.accountPlayable || baselineEstablished ? observedAt : null,
+        lastPlayableAt: null,
         confirmedAt: null,
         createdAt: observedAt,
-        updatedAt: observedAt,
-      };
-      if (!song.accountPlayable) {
-        created = confirmAnomaly(created, "grey", observedAt);
-        newlyConfirmedSongIds.push(song.id);
-        confirmedGreyCount += 1;
-      }
-      managed.set(song.id, created);
-      if (!baselineEstablished) newCount += 1;
-      continue;
-    }
-
-    let next: ManagedSongState = {
-      ...existing,
+      } satisfies Partial<ManagedSongState>),
+      bucket: type ? "anomaly" : "normal",
+      anomalyType: type,
       lastSeenAt: observedAt,
       lastConfirmedAt: observedAt,
-      lastPlayableAt: song.accountPlayable ? observedAt : existing.lastPlayableAt,
+      lastPlayableAt: type === null ? observedAt : existing?.lastPlayableAt ?? null,
+      confirmedAt: type === null ? null : existing?.anomalyType === type ?
+        existing.confirmedAt : observedAt,
       updatedAt: observedAt,
     };
-
-    if (existing.bucket === "anomaly") {
-      if (song.accountPlayable) {
-        next = clearAnomaly(next);
-        automaticallyRecoveredSongIds.push(song.id);
-      }
-      // A confirmed anomaly keeps its original type while absent or unplayable.
-    } else if (!song.accountPlayable) {
-      next = confirmAnomaly(next, "grey", observedAt);
+    if (!existing && !baselineEstablished) newCount += 1;
+    if (type && existing?.anomalyType !== type) {
       newlyConfirmedSongIds.push(song.id);
-      confirmedGreyCount += 1;
+      if (type === "grey") confirmedGreyCount += 1;
+      else confirmedMismatchCount += 1;
     }
+    if (!type && existing?.bucket === "anomaly") automaticallyRecoveredSongIds.push(song.id);
     managed.set(song.id, next);
   }
 
   for (const existing of original.values()) {
-    if (snapshotById.has(existing.songId) || existing.bucket === "anomaly") continue;
+    if (snapshotById.has(existing.songId)) continue;
     managed.set(existing.songId, {
-      ...confirmAnomaly(existing, "missing", observedAt),
+      ...existing,
+      bucket: "anomaly",
+      anomalyType: "missing",
+      confirmedAt: existing.anomalyType === "missing" ? existing.confirmedAt : observedAt,
       lastConfirmedAt: observedAt,
+      updatedAt: observedAt,
     });
-    newlyConfirmedSongIds.push(existing.songId);
-    confirmedMissingCount += 1;
+    if (existing.anomalyType !== "missing") {
+      newlyConfirmedSongIds.push(existing.songId);
+      confirmedMissingCount += 1;
+    }
   }
 
   const managedSongUpserts = [...managed.values()].filter((row) => {
@@ -247,16 +258,14 @@ export function planSnapshotSync(
     observedAt,
     shanghaiDate,
     baselineEstablished,
-    songUpserts: snapshot.songs.map((song) => ({
-      ...song,
-      neteaseUrl: song.neteaseUrl ?? `https://music.163.com/#/song?id=${encodeURIComponent(song.id)}`,
-    })),
+    songUpserts,
     managedSongUpserts,
     result: {
       currentSongCount: managed.size,
       newCount,
       confirmedMissingCount,
       confirmedGreyCount,
+      confirmedMismatchCount,
       autoRecoveredCount: automaticallyRecoveredSongIds.length,
       newlyConfirmedSongIds,
       automaticallyRecoveredSongIds,

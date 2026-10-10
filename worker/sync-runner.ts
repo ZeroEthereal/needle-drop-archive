@@ -24,6 +24,7 @@ export interface MusicSyncResult {
   newCount: number;
   confirmedMissingCount: number;
   confirmedGreyCount: number;
+  confirmedMismatchCount: number;
   autoRecoveredCount: number;
 }
 
@@ -164,6 +165,7 @@ export async function runMusicSync(env: Env, trigger: SyncTrigger): Promise<Musi
       newCount: plan.result.newCount,
       confirmedMissingCount: plan.result.confirmedMissingCount,
       confirmedGreyCount: plan.result.confirmedGreyCount,
+      confirmedMismatchCount: plan.result.confirmedMismatchCount,
       autoRecoveredCount: plan.result.autoRecoveredCount,
     };
   } catch (error) {

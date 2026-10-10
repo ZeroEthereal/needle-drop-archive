@@ -2,9 +2,9 @@ export type ViewId = "recovery" | "likes" | "sync";
 
 export type MotionMode = "immersive" | "balanced" | "static";
 
-export type RecoveryKind = "missing" | "grey";
+export type RecoveryKind = "missing" | "grey" | "mismatch";
 
-export type SongState = "playable" | "grey" | "missing" | "unknown";
+export type SongState = "playable" | "grey" | "missing" | "mismatch" | "unknown";
 
 export interface SongRecord {
   id: string;
@@ -22,6 +22,8 @@ export interface SongRecord {
 
 export interface RecoveryItem {
   kind: RecoveryKind;
+  observedTitle?: string;
+  observedArtists?: string[];
   song: SongRecord;
   lastNormalAt?: string;
   confirmedAt?: string;
@@ -42,7 +44,7 @@ export interface MonitoredPlaylistStatus {
   id: string; name: string; coverUrl?: string; ownerUid?: string;
   ownerName?: string; owned: boolean; specialType?: number;
   listOrder: number; boundAt?: string; totalSongCount: number;
-  normalCount: number; missingCount: number; greyCount: number;
+  normalCount: number; missingCount: number; greyCount: number; mismatchCount: number;
   task?: PlaylistTask;
 }
 
@@ -93,12 +95,14 @@ export interface SyncStatus {
   normalCount?: number;
   missingCount?: number;
   greyCount?: number;
+  mismatchCount?: number;
   sessionStatus: SessionStatus;
   error?: string;
   progress?: number;
   recoveryTotal?: number;
   recoveryGreyCount?: number;
   recoveryMissingCount?: number;
+  recoveryMismatchCount?: number;
   playlists?: MonitoredPlaylistStatus[];
   batch?: SyncBatchStatus;
   completedBatch?: SyncBatchStatus;

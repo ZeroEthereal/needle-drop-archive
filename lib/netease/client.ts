@@ -730,6 +730,47 @@ export class NeteaseClient {
     return normalizedIds.map((id) => output.get(id) as PlaybackAvailability);
   }
 
+  async getSongMetadata(ids: readonly string[], session: NeteaseSession,
+    playlist: PlaylistDetail | string, strict = true): Promise<{
+      songs: Array<{ id: string; song: SongSummary; inCloud: boolean }>;
+      cloudSongs: CloudSong[]; warnings: string[];
+    }> {
+    const warnings: string[] = [];
+    const detailBatch = await this.getSongDetails(ids, session);
+    const cloudSongs = await this.getCloudSongDetails(detailBatch.missingIds, session);
+    const detailById = new Map(detailBatch.songs.map((song) => [song.id, song]));
+    const needEmbedded = detailBatch.missingIds.some((id) => !cloudSongs.some(
+      (song) => song.id === id || song.simpleSong?.id === id));
+    const detail = typeof playlist === "string"
+      ? needEmbedded ? await this.getPlaylistDetail(playlist, session) : null : playlist;
+    const embeddedById = new Map((detail?.embeddedTracks ?? []).map((song) => [song.id, song]));
+    const cloudById = new Map<string, CloudSong>();
+    for (const song of cloudSongs) {
+      cloudById.set(song.id, song);
+      if (song.simpleSong) cloudById.set(song.simpleSong.id, song);
+    }
+    const unresolvedDetailIds = detailBatch.missingIds.filter(
+      (id) => !cloudById.has(id) && !embeddedById.has(id),
+    );
+    if (strict && unresolvedDetailIds.length > 0) {
+      throw new NeteaseError(
+        "incomplete_response",
+        `NetEase song-detail batches omitted ${unresolvedDetailIds.length} requested ids without a cloud or playlist fallback`,
+        { endpoint: "/api/v3/song/detail" },
+      );
+    }
+    if (detailBatch.missingIds.length > 0) {
+      warnings.push(
+        `${detailBatch.missingIds.length} playlist tracks had no standard song-detail record; cloud/playlist fallbacks were used where available.`,
+      );
+    }
+    return { cloudSongs, warnings, songs: ids.map((id) => {
+      const cloud = cloudById.get(id);
+      return { id, song: detailById.get(id) ?? (cloud ? cloudSongAsSummary(cloud) : null)
+        ?? embeddedById.get(id) ?? placeholderSong(id), inCloud: Boolean(cloud) };
+    }) };
+  }
+
   async getAccountSnapshot(session: NeteaseSession, options: AccountSnapshotOptions): Promise<AccountSnapshot> {
     const strict = options.strictCompleteness ?? true;
     const login = await this.getLoginStatus(session);
@@ -760,51 +801,29 @@ export class NeteaseClient {
     }
 
     await options.onPlaylistRead?.();
-    const detailBatch = await this.getSongDetails(trackIds, session);
-    const cloudSongs = await this.getCloudSongDetails(detailBatch.missingIds, session);
+    const metadata = await this.getSongMetadata(trackIds, session, playlist, strict);
     const availability = await this.getPlaybackAvailability(trackIds, session);
-    const detailById = new Map(detailBatch.songs.map((song) => [song.id, song]));
-    const embeddedById = new Map(playlist.embeddedTracks.map((song) => [song.id, song]));
-    const cloudById = new Map<string, CloudSong>();
-    for (const song of cloudSongs) {
-      cloudById.set(song.id, song);
-      if (song.simpleSong) cloudById.set(song.simpleSong.id, song);
-    }
     const availabilityById = new Map(availability.map((item) => [item.id, item]));
-    const unresolvedDetailIds = detailBatch.missingIds.filter(
-      (id) => !cloudById.has(id) && !embeddedById.has(id),
-    );
-    if (strict && unresolvedDetailIds.length > 0) {
-      throw new NeteaseError(
-        "incomplete_response",
-        `NetEase song-detail batches omitted ${unresolvedDetailIds.length} requested ids without a cloud or playlist fallback`,
-        { endpoint: "/api/v3/song/detail" },
-      );
-    }
-    if (detailBatch.missingIds.length > 0) {
-      warnings.push(
-        `${detailBatch.missingIds.length} playlist tracks had no standard song-detail record; cloud/playlist fallbacks were used where available.`,
-      );
-    }
+    warnings.push(...metadata.warnings);
     return {
       capturedAt: new Date(this.now()).toISOString(),
       userId: login.profile.userId,
       playlist,
       trackIds,
-      cloudSongs,
-      songs: trackIds.map((id) => {
-        const cloud = cloudById.get(id);
+      cloudSongs: metadata.cloudSongs,
+      songs: metadata.songs.map((item) => {
+        const id = item.id;
         const playback = availabilityById.get(id);
         if (!playback) {
           throw new NeteaseError("incomplete_response", "Playback result disappeared during snapshot assembly");
         }
         return {
           id,
-          song: detailById.get(id) ?? (cloud ? cloudSongAsSummary(cloud) : null) ?? embeddedById.get(id) ?? placeholderSong(id),
+          song: item.song,
           playable: playback.playable,
           playbackCode: playback.code,
           playbackReason: playback.reason,
-          inCloud: Boolean(cloud),
+          inCloud: item.inCloud,
         };
       }),
       warnings,

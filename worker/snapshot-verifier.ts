@@ -4,8 +4,9 @@ import {
   type NeteaseSession,
   type PlaybackAvailability,
   type PlaylistDetail,
+  type SongSummary,
 } from "../lib/netease/index.ts";
-import type { SyncState } from "../lib/sync/state-machine.ts";
+import { sameSongIdentity, type SyncState } from "../lib/sync/state-machine.ts";
 
 export interface SnapshotVerificationClient {
   getPlaylistDetail(
@@ -16,6 +17,8 @@ export interface SnapshotVerificationClient {
     ids: readonly (string | number)[],
     session: NeteaseSession,
   ): Promise<PlaybackAvailability[]>;
+  getSongMetadata(ids: readonly string[], session: NeteaseSession,
+    playlist: string): Promise<{ songs: Array<{ id: string; song: SongSummary }> }>;
 }
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
@@ -35,7 +38,7 @@ function assertCompleteMembership(playlist: PlaylistDetail, allowEmpty = false):
 }
 
 /**
- * Rechecks only observations that would move a normal song into an anomaly.
+ * Rechecks new anomaly types and changed/restored song identity before committing.
  * Any incomplete or changing upstream result aborts before D1 state is written.
  */
 export async function verifySnapshotAnomalies(
@@ -46,7 +49,7 @@ export async function verifySnapshotAnomalies(
 ): Promise<AccountSnapshot> {
   const firstMembership = new Set(account.trackIds);
   const suspectedMissing = state.managedSongs.filter(
-    (row) => row.bucket === "normal" && !firstMembership.has(row.songId),
+    (row) => row.anomalyType !== "missing" && !firstMembership.has(row.songId),
   );
 
   if (suspectedMissing.length > 0) {
@@ -66,13 +69,12 @@ export async function verifySnapshotAnomalies(
     .filter((song) => {
       if (song.playable) return false;
       const existing = stateById.get(song.id);
-      return !existing || existing.bucket === "normal";
+      return !existing || existing.anomalyType !== "grey";
     })
     .map((song) => song.id);
 
-  if (suspectedGreyIds.length === 0) return account;
-
-  const secondAvailability = await client.getPlaybackAvailability(suspectedGreyIds, session);
+  const secondAvailability = suspectedGreyIds.length > 0
+    ? await client.getPlaybackAvailability(suspectedGreyIds, session) : [];
   const availabilityById = new Map(secondAvailability.map((item) => [item.id, item]));
   if (availabilityById.size !== suspectedGreyIds.length) {
     throw new NeteaseError(
@@ -82,7 +84,7 @@ export async function verifySnapshotAnomalies(
     );
   }
 
-  return {
+  const verifiedAccount = {
     ...account,
     songs: account.songs.map((song) => {
       const verified = availabilityById.get(song.id);
@@ -96,4 +98,27 @@ export async function verifySnapshotAnomalies(
         : song;
     }),
   };
+  const originals = new Map((state.songs ?? []).map((song) => [song.id, song]));
+  const changedIds = verifiedAccount.songs.filter((item) => {
+    const original = originals.get(item.id);
+    return item.playable && original && (!sameSongIdentity(original, {
+      title: item.song.title, artists: item.song.artists.map((artist) => artist.name),
+    }) || original.observedTitle !== null);
+  }).map((item) => item.id);
+  if (changedIds.length) {
+    const second = await client.getSongMetadata(changedIds, session, account.playlist.id);
+    const byId = new Map(second.songs.map((item) => [item.id, item.song]));
+    for (const id of changedIds) {
+      const first = verifiedAccount.songs.find((item) => item.id === id)!.song;
+      const next = byId.get(id);
+      if (!next || first.title !== next.title ||
+        JSON.stringify(first.artists.map((artist) => artist.name)) !==
+        JSON.stringify(next.artists.map((artist) => artist.name))) {
+        throw new NeteaseError("incomplete_response",
+          "网易云歌曲资料复核不完整或发生变化，本次同步未写入歌曲状态。",
+          { endpoint: "/api/v3/song/detail", retryable: true });
+      }
+    }
+  }
+  return verifiedAccount;
 }
