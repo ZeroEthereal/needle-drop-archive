@@ -1,4 +1,5 @@
 import { NeteaseError } from "./errors.ts";
+import { normalizeSongTextList, validSongDuration } from "../song-display.ts";
 import {
   createNeteaseSession,
   mergeSessionSetCookies,
@@ -124,7 +125,9 @@ function normalizeSong(value: unknown): SongSummary | null {
     title,
     artists: normalizeArtists(value.ar ?? value.artists),
     album: normalizeAlbum(value.al ?? value.album),
-    durationMs: toInteger(value.dt ?? value.duration),
+    durationMs: validSongDuration(toInteger(value.dt ?? value.duration)),
+    aliases: normalizeSongTextList(value.alia ?? value.alias),
+    translations: normalizeSongTextList(value.tns ?? value.transNames),
     fee: toInteger(value.fee),
     copyright: toInteger(value.copyright),
     neteaseUrl: `https://music.163.com/song?id=${encodeURIComponent(id)}`,
@@ -165,6 +168,8 @@ function cloudSongAsSummary(song: CloudSong): SongSummary {
     artists: song.artists,
     album: song.album,
     durationMs: null,
+    aliases: [],
+    translations: [],
     fee: null,
     copyright: null,
     neteaseUrl: `https://music.163.com/song?id=${encodeURIComponent(song.id)}`,
@@ -247,6 +252,8 @@ function placeholderSong(id: string): SongSummary {
     artists: [],
     album: { id: null, name: null, coverUrl: null },
     durationMs: null,
+    aliases: [],
+    translations: [],
     fee: null,
     copyright: null,
     neteaseUrl: `https://music.163.com/song?id=${encodeURIComponent(id)}`,

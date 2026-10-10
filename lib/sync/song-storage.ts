@@ -1,9 +1,24 @@
 import type { D1DatabasePort } from "./repository";
 import type { SongMetadata, SongUpsert } from "./state-machine";
+import { normalizeSongTextList, validSongDuration } from "../song-display.ts";
+
+export interface SongDisplayDbRow {
+  aliases: string | null;
+  translations: string | null;
+  duration_ms: number | null;
+}
+
+export function readSongDisplayMetadata(row: SongDisplayDbRow) {
+  return {
+    aliases: row.aliases === null ? null : normalizeSongTextList(JSON.parse(row.aliases)),
+    translations: row.translations === null ? null : normalizeSongTextList(JSON.parse(row.translations)),
+    durationMs: validSongDuration(row.duration_ms),
+  };
+}
 
 export async function loadSongMetadata(db: D1DatabasePort): Promise<SongMetadata[]> {
   const result = await db.prepare(`SELECT id, title, artists, album, cover_url, netease_url,
-    observed_title, observed_artists FROM songs`).all<{
+    observed_title, observed_artists, aliases, translations, duration_ms FROM songs`).all<SongDisplayDbRow & {
       id: string; title: string; artists: string; album: string | null;
       cover_url: string | null; netease_url: string;
       observed_title: string | null; observed_artists: string | null;
@@ -11,19 +26,25 @@ export async function loadSongMetadata(db: D1DatabasePort): Promise<SongMetadata
   if (!result.success) throw new Error(result.error || "Could not load song metadata");
   return (result.results ?? []).map((row) => ({ id: row.id, title: row.title,
     artists: JSON.parse(row.artists), album: row.album, coverUrl: row.cover_url,
-    neteaseUrl: row.netease_url, observedTitle: row.observed_title,
+    ...readSongDisplayMetadata(row), neteaseUrl: row.netease_url, observedTitle: row.observed_title,
     observedArtists: row.observed_artists === null ? null : JSON.parse(row.observed_artists) }));
 }
 
 export function encodeSongUpserts(songs: SongUpsert[]): string {
   return JSON.stringify(songs.map((song) => ({ ...song, artists: JSON.stringify(song.artists),
+    aliases: song.aliases == null ? null : JSON.stringify(normalizeSongTextList(song.aliases)),
+    translations: song.translations == null ? null : JSON.stringify(normalizeSongTextList(song.translations)),
+    durationMs: validSongDuration(song.durationMs),
     observedArtists: song.observedArtists === null ? null : JSON.stringify(song.observedArtists) })));
 }
 
 export function decodeSongUpserts(payload: string): SongUpsert[] {
-  return (JSON.parse(payload) as Array<Omit<SongUpsert, "artists" | "observedArtists"> & {
-    artists: string; observedArtists: string | null;
+  return (JSON.parse(payload) as Array<Omit<SongUpsert, "artists" | "observedArtists" | "aliases" | "translations"> & {
+    artists: string; observedArtists: string | null; aliases?: string | null; translations?: string | null;
   }>).map((song) => ({ ...song, artists: JSON.parse(song.artists),
+    aliases: song.aliases == null ? null : normalizeSongTextList(JSON.parse(song.aliases)),
+    translations: song.translations == null ? null : normalizeSongTextList(JSON.parse(song.translations)),
+    durationMs: validSongDuration(song.durationMs),
     observedArtists: song.observedArtists == null ? null : JSON.parse(song.observedArtists) }));
 }
 
@@ -40,14 +61,16 @@ export function stagedSongMetadata(originals: SongMetadata[], payloads: string[]
 /** All sync/binding writers preserve the first identity for an existing ID. */
 export function upsertSongsSql(guard: string): string {
   return `INSERT INTO songs (id, title, artists, album, cover_url, netease_url,
-    observed_title, observed_artists, created_at, updated_at)
+    observed_title, observed_artists, aliases, translations, duration_ms, created_at, updated_at)
     SELECT json_extract(value, '$.id'), json_extract(value, '$.title'),
       json_extract(value, '$.artists'), json_extract(value, '$.album'),
       json_extract(value, '$.coverUrl'), json_extract(value, '$.neteaseUrl'),
       json_extract(value, '$.observedTitle'), json_extract(value, '$.observedArtists'),
+      json_extract(value, '$.aliases'), json_extract(value, '$.translations'), json_extract(value, '$.durationMs'),
       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM json_each(?) WHERE ${guard}
     ON CONFLICT(id) DO UPDATE SET album = excluded.album, cover_url = excluded.cover_url,
       observed_title = excluded.observed_title, observed_artists = excluded.observed_artists,
+      aliases = excluded.aliases, translations = excluded.translations, duration_ms = excluded.duration_ms,
       netease_url = excluded.netease_url, updated_at = CURRENT_TIMESTAMP`;
 }
 

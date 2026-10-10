@@ -54,6 +54,7 @@ class TestD1 {
         id TEXT PRIMARY KEY, title TEXT NOT NULL, artists TEXT NOT NULL,
         album TEXT, cover_url TEXT, netease_url TEXT NOT NULL,
         observed_title TEXT, observed_artists TEXT,
+        aliases TEXT, translations TEXT, duration_ms INTEGER,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE TABLE managed_songs (

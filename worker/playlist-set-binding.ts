@@ -45,8 +45,9 @@ export async function preparePlaylistBaseline(env: Env, bindingId: string, playl
   const existing = await env.DB.prepare(`SELECT playlist_id, song_json FROM pending_playlist_baselines
     WHERE binding_id = ? AND playlist_id = ?`).bind(bindingId, playlistId)
     .first<{ playlist_id: string; song_json: string }>();
-  if (existing && (JSON.parse(existing.song_json) as Array<{ sourceState?: string }>)
-    .every((song) => song.sourceState !== undefined)) return { playlistId, staged: true };
+  if (existing && (JSON.parse(existing.song_json) as Array<{ sourceState?: string; aliases?: unknown; translations?: unknown; durationMs?: unknown }>)
+    .every((song) => song.sourceState !== undefined && song.aliases !== undefined &&
+      song.translations !== undefined && song.durationMs !== undefined)) return { playlistId, staged: true };
   const stored = await loadNeteaseSession(env, pending.session_id);
   if (!stored || stored.uid !== pending.account_uid) throw new Error("Pending NetEase session is unavailable");
   const client = new NeteaseClient();

@@ -1,6 +1,7 @@
 "use client";
 
 import SyncHistory from "./SyncHistory";
+import { formatSongDuration, normalizeSongTextList, songSubtitle, validSongDuration } from "../../lib/song-display";
 
 import {
   Fragment,
@@ -136,6 +137,9 @@ function normalizeSong(value: unknown, forcedState?: SongState): SongRecord | nu
     id,
     title: [value.title, value.name, value.songName].find((entry) => typeof entry === "string" && entry.length > 0) as string ?? "未命名歌曲",
     artists: normalizeArtists(value.artists ?? value.artist ?? value.ar),
+    aliases: normalizeSongTextList(value.aliases),
+    translations: normalizeSongTextList(value.translations),
+    durationMs: validSongDuration(value.durationMs),
     album:
       firstString(
         typeof albumValue === "string" ? albumValue : undefined,
@@ -437,6 +441,24 @@ function formatNumber(value?: number): string {
 
 function artistLine(song: SongRecord): string {
   return song.artists.length ? song.artists.join(" / ") : "未知歌手";
+}
+
+function SongListInfo({ song, recovery = false }: { song: SongRecord; recovery?: boolean }) {
+  const subtitle = songSubtitle(song);
+  return <div className="song-cell">
+    <SongCover song={song} />
+    <div>
+      <h3>{song.title}</h3>
+      {subtitle ? <p className="song-subtitle">{subtitle}</p> : null}
+      <p className="mobile-song-artists">{artistLine(song)}</p>
+      {recovery ? <small className="mobile-song-album">{song.album}</small> : null}
+    </div>
+  </div>;
+}
+
+function LibraryStateBadge({ state }: { state: SongState }) {
+  const label = state === "playable" ? "正常" : state === "unknown" ? "未知" : `已${anomalyLabels[state]}`;
+  return <span className={`library-state state-${state}`}><i />{label}</span>;
 }
 
 async function copyToClipboard(value: string): Promise<void> {
@@ -864,27 +886,21 @@ function RecoveryView({
         <div className="recovery-list" role="list">
           <div className="list-header recovery-grid" aria-hidden="true">
             <span>歌曲</span>
+            <span>歌手</span>
+            <span>专辑</span>
+            <span>时长</span>
             <span>状态</span>
             <span>最后正常</span>
             <span>受影响歌单</span>
-            <span />
+            <span>操作</span>
           </div>
           {visible.map((item) => (
             <article className="recovery-row recovery-grid" role="listitem" key={item.song.id}>
-              <div className="song-cell">
-                <SongCover song={item.song} />
-                <div>
-                  <h3>{item.song.title}</h3>
-                  <p>{artistLine(item.song)}</p>
-                  <small>{item.song.album}</small>
-                  {item.kind === "mismatch" && item.observedTitle !== undefined ?
-                    <div className="mismatch-comparison">
-                      <p><span>原资料</span><span>{item.song.title} ／ {artistLine(item.song)}</span></p>
-                      <p><span>当前资料</span><span>{item.observedTitle} ／ {item.observedArtists?.join(" / ") || "未知歌手"}</span></p>
-                    </div> : null}
-                </div>
-              </div>
-              <div><StatusBadge kind={item.kind} /></div>
+              <SongListInfo song={item.song} recovery />
+              <p className="artist-cell">{artistLine(item.song)}</p>
+              <p className="album-cell">{item.song.album}</p>
+              <span className="duration-cell">{formatSongDuration(item.song.durationMs)}</span>
+              <div className="recovery-status"><StatusBadge kind={item.kind} /></div>
               <time>{formatDateTime(item.lastNormalAt)}</time>
               <RecoveryContexts contexts={item.contexts} />
               <div className="row-actions">
@@ -915,6 +931,11 @@ function RecoveryView({
                   {completingSongId === item.song.id ? "处理中" : "完成"}
                 </button>
               </div>
+              {item.kind === "mismatch" && item.observedTitle !== undefined ?
+                <div className="mismatch-comparison">
+                  <p><span>原资料</span><span>{item.song.title} ／ {artistLine(item.song)}</span></p>
+                  <p><span>当前资料</span><span>{item.observedTitle} ／ {item.observedArtists?.join(" / ") || "未知歌手"}</span></p>
+                </div> : null}
             </article>
           ))}
           <div className="load-sentinel">
@@ -1026,7 +1047,7 @@ function LikesView({
     <div className="view-stack view-likes">
       <PlaylistPulse playlist={playlist} disabled={syncDisabled} onSync={onSyncPlaylist} filter={filter} onFilterChange={onFilterChange} />
       <div className="toolbar glass-panel">
-        <p className="toolbar-note">正常歌曲保持安静，异常歌曲会标出“已变灰”、“已消失”或“已错配”。</p>
+        <p className="toolbar-note">歌曲状态显示为“正常”、“已变灰”、“已消失”或“已错配”。</p>
         <div className="library-tools">
           <SearchBox value={query} onChange={setQuery} placeholder="在歌单里搜索" />
           <div className="view-switch" role="group" aria-label="歌单视图">
@@ -1059,7 +1080,7 @@ function LikesView({
         <section className={`likes-table view-${viewMode}`}>
           {viewMode === "list" ? (
             <div className="list-header likes-grid" aria-hidden="true">
-              <span>歌曲</span><span>专辑</span><span>发现时间</span><span>最近确认</span><span>状态</span><span />
+              <span>歌曲</span><span>歌手</span><span>专辑</span><span>时长</span><span>发现时间</span><span>最近确认</span><span>状态</span>
             </div>
           ) : null}
           <div className={viewMode === "grid" ? "likes-cover-grid" : "likes-list"} role="list">
@@ -1067,7 +1088,6 @@ function LikesView({
               <article className={`like-cover-card ${song.state === "grey" ? "is-grey" : song.state === "missing" ? "is-missing" : song.state === "mismatch" ? "is-mismatch" : ""}`} role="listitem" key={song.id}>
                 <a href={song.neteaseUrl} target="_blank" rel="noreferrer" aria-label={`在网易云打开 ${song.title}`}>
                   <SongCover song={song} size="large" />
-                  <span className="cover-open" aria-hidden="true">↗</span>
                 </a>
                 <h3>{song.title}</h3>
                 <p>{artistLine(song)}</p>
@@ -1077,17 +1097,13 @@ function LikesView({
               </article>
             ) : (
               <article className="like-row likes-grid" role="listitem" key={song.id}>
-                <div className="song-cell">
-                  <SongCover song={song} />
-                  <div><h3>{song.title}</h3><p>{artistLine(song)}</p></div>
-                </div>
+                <SongListInfo song={song} />
+                <p className="artist-cell">{artistLine(song)}</p>
                 <p className="album-cell">{song.album}</p>
+                <span className="duration-cell">{formatSongDuration(song.durationMs)}</span>
                 <time>{formatDateTime(song.firstSeenAt)}</time>
                 <time>{formatDateTime(song.lastConfirmedAt)}</time>
-                {song.state === "grey" ? <span className="library-state state-grey"><i />已变灰</span> : song.state === "missing" ? <span className="library-state state-missing"><i />已消失</span> : song.state === "mismatch" ? <span className="library-state state-mismatch"><i />已错配</span> : <span />}
-                {song.neteaseUrl ? (
-                  <a className="song-open" href={song.neteaseUrl} target="_blank" rel="noreferrer" aria-label={`在网易云打开 ${song.title}`}>↗</a>
-                ) : <span />}
+                <LibraryStateBadge state={song.state} />
               </article>
             ))}
           </div>

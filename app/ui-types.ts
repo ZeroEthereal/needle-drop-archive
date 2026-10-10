@@ -10,6 +10,9 @@ export interface SongRecord {
   id: string;
   title: string;
   artists: string[];
+  aliases?: string[] | null;
+  translations?: string[] | null;
+  durationMs?: number | null;
   album: string;
   coverUrl?: string;
   neteaseUrl?: string;

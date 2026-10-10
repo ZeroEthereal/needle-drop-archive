@@ -51,6 +51,8 @@ export interface SongSummary {
   artists: ArtistSummary[];
   album: AlbumSummary;
   durationMs: number | null;
+  aliases: string[];
+  translations: string[];
   fee: number | null;
   copyright: number | null;
   neteaseUrl: string;

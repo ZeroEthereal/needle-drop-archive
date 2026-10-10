@@ -917,14 +917,14 @@ input:focus-visible {
 
 .recovery-grid {
   display: grid;
-  grid-template-columns: minmax(210px,1.5fr) 90px 110px minmax(170px,1fr) minmax(250px,auto);
+  grid-template-columns: minmax(0,2.4fr) minmax(0,1.1fr) minmax(0,1.3fr) 48px 76px 88px minmax(0,1.15fr) minmax(96px,1.5fr);
   gap: 14px;
 }
 
 .recovery-contexts { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .context-tag { max-width: 180px; overflow: hidden; padding: 5px 7px; border-radius: 7px; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.context-tag.kind-grey { background: rgba(152,110,255,.13); color: #ceafff; }
-.context-tag.kind-missing { background: rgba(255,105,135,.12); color: #ff93a8; }
+.context-tag.kind-grey { background: rgba(152,110,255,.13); color: #b693ff; }
+.context-tag.kind-missing { background: rgba(255,105,135,.12); color: var(--red); }
 .recovery-contexts button { border: 0; background: transparent; color: var(--cyan); font-size: 10px; cursor: pointer; }
 .playlist-filter-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .playlist-filter-label select { max-width: 180px; min-height: 40px; padding: 0 8px; border: 1px solid var(--line); border-radius: 9px; background: #21192d; color: white; }
@@ -1049,13 +1049,13 @@ input:focus-visible {
 }
 
 .status-missing {
-  color: #ff7f92;
+  color: var(--red);
   background: rgba(255,82,111,.07);
 }
 
 .status-grey,
 .library-state.state-grey {
-  color: var(--amber);
+  color: #b693ff;
 }
 
 .library-state.state-missing {
@@ -1078,6 +1078,7 @@ input:focus-visible {
 
 .row-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
@@ -1090,7 +1091,6 @@ input:focus-visible {
 
 .row-actions a,
 .row-actions button,
-.song-open,
 .load-sentinel button,
 .connection-actions button,
 .quiet-button {
@@ -1123,7 +1123,6 @@ input:focus-visible {
 
 .row-actions a:hover,
 .row-actions button:hover,
-.song-open:hover,
 .load-sentinel button:hover,
 .connection-actions button:hover {
   border-color: rgba(255,255,255,.24);
@@ -1307,7 +1306,7 @@ input:focus-visible {
 
 .likes-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 2.1fr) minmax(180px, 1.6fr) minmax(125px, .95fr) minmax(125px, .95fr) minmax(80px, .55fr) 42px;
+  grid-template-columns: minmax(0,2.3fr) minmax(0,1.15fr) minmax(0,1.6fr) 48px 88px 88px 64px;
   gap: 16px;
 }
 
@@ -1327,12 +1326,6 @@ input:focus-visible {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.song-open {
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0;
 }
 
 .likes-cover-grid {
@@ -1376,28 +1369,6 @@ input:focus-visible {
 
 .like-cover-card.is-missing .song-cover-large {
   filter: grayscale(1) brightness(.62);
-}
-
-.cover-open {
-  position: absolute;
-  right: 11px;
-  bottom: 11px;
-  display: grid;
-  width: 38px;
-  aspect-ratio: 1;
-  place-items: center;
-  border: 1px solid rgba(255,255,255,.18);
-  border-radius: 50%;
-  background: rgba(7,5,13,.76);
-  opacity: 0;
-  backdrop-filter: blur(10px);
-  transform: translateY(8px);
-  transition: 220ms var(--ease-out);
-}
-
-.like-cover-card:hover .cover-open {
-  opacity: 1;
-  transform: translateY(0);
 }
 
 .like-cover-card .library-state {
@@ -2230,12 +2201,32 @@ input:focus-visible {
 @keyframes progress-scan { from { transform: translateX(-110%); } to { transform: translateX(300%); } }
 @keyframes qr-scan { from { top: 16px; } to { top: calc(100% - 18px); } }
 
+/* Full source wording in list views; cover-card typography stays unchanged. */
+.likes-grid > *, .recovery-grid > * { min-width: 0; }
+.song-cell h3, .song-cell p, .song-cell small,
+.like-row .album-cell, .recovery-row .album-cell, .artist-cell {
+  overflow: visible;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  line-height: 1.65;
+}
+.artist-cell { margin: 0; color: var(--muted); font-size: 11px; }
+.duration-cell { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.song-cell .mobile-song-artists, .song-cell .mobile-song-album { display: none; }
+.context-tag { max-width: min(180px,100%); }
+.row-actions > * { max-width: 100%; }
+.row-actions .copy-button { padding-inline: 8px; }
+.library-state.state-playable { color: var(--lime); }
+.library-state, .status-badge { text-shadow: 0 0 8px color-mix(in srgb, currentColor 28%, transparent); }
+.library-state i, .status-badge i { border-radius: 50%; box-shadow: 0 0 7px color-mix(in srgb, currentColor 45%, transparent); flex-shrink: 0; }
+
 @media (max-width: 1180px) {
   :root { --sidebar: 224px; }
   .content-stage { padding-inline: 30px; }
   .vinyl-hero { grid-template-columns: 1.2fr .8fr; }
-  .recovery-grid { grid-template-columns: minmax(200px,1.3fr) 85px 100px minmax(130px,1fr) minmax(230px,auto); gap: 10px; }
-  .likes-grid { grid-template-columns: minmax(210px,2fr) minmax(150px,1.5fr) 100px 100px 72px 38px; gap: 10px; }
+  .recovery-grid { gap: 10px; }
+  .likes-grid { grid-template-columns: minmax(0,2.3fr) minmax(0,1.15fr) minmax(0,1.6fr) 44px 78px 78px 60px; gap: 10px; }
   .connection-card { grid-template-columns: auto 1fr; }
   .connection-actions { grid-column: 1 / -1; grid-template-columns: repeat(2,max-content); }
 }
@@ -2288,13 +2279,21 @@ input:focus-visible {
   .vinyl-record { min-width: 205px; }
   .recovery-list .list-header,
   .likes-table .list-header { display: none; }
-  .recovery-grid { grid-template-columns: 1fr auto; }
+  .recovery-grid { grid-template-columns: minmax(0,1fr) auto; }
   .recovery-row { min-height: 114px; padding: 16px; }
-  .recovery-row > div:nth-child(2) { justify-self: end; }
+  .recovery-row .song-cell { grid-column: 1; grid-row: 1 / span 2; }
+  .recovery-row .duration-cell { grid-column: 2; grid-row: 1; justify-self: end; }
+  .recovery-status { grid-column: 2; grid-row: 2; justify-self: end; }
   .recovery-row > time { display: none; }
   .recovery-row .recovery-contexts { grid-column: 1 / -1; }
   .recovery-row .row-actions { grid-column: 1 / -1; justify-content: flex-end; }
-  .likes-grid { grid-template-columns: minmax(0,1fr) auto 38px; }
+  .likes-grid { grid-template-columns: minmax(0,1fr) auto; }
+  .like-row .song-cell { grid-column: 1; grid-row: 1 / span 2; }
+  .like-row .duration-cell { grid-column: 2; grid-row: 1; justify-self: end; }
+  .like-row > .library-state { grid-column: 2; grid-row: 2; justify-self: end; }
+  .like-row .artist-cell, .recovery-row .artist-cell, .recovery-row > .album-cell { display: none; }
+  .song-cell .song-subtitle { display: none; }
+  .song-cell .mobile-song-artists, .song-cell .mobile-song-album { display: block; }
   .like-row .album-cell,
   .like-row > time { display: none; }
   .sync-steps { grid-template-columns: repeat(3,1fr); }
@@ -2329,15 +2328,13 @@ input:focus-visible {
   .mini-disc { width: 62px; }
   .library-marquee h2 { font-size: 16px; }
   .recovery-row .song-cover { width: 46px; height: 46px; }
-  .recovery-row > div:nth-child(2) { align-self: start; }
+  .recovery-status { align-self: start; }
   .recovery-grid { grid-template-columns: minmax(0,1fr) auto; }
   .row-actions a,
   .row-actions button { min-height: 44px; }
   .likes-cover-grid { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px 12px; padding: 16px; }
   .like-cover-card h3 { font-size: 12px; }
-  .likes-grid { grid-template-columns: minmax(0,1fr) 38px; padding-inline: 12px; }
-  .like-row > .library-state { grid-column: 1; }
-  .like-row .song-open { grid-column: 3; grid-row: 1; }
+  .likes-grid { padding-inline: 12px; }
   .sync-button { width: 48px; overflow: hidden; padding: 0; font-size: 0; }
   .sync-button span { font-size: 17px; }
   .sync-console { padding: 21px 17px; }
@@ -2373,7 +2370,7 @@ input:focus-visible {
 /* Song mismatch evidence and accessible playlist status filters. */
 .status-mismatch, .library-state.state-mismatch { color: var(--amber); background: rgba(255,190,90,.12); }
 .context-tag.kind-mismatch { color: var(--amber); background: rgba(255,190,90,.12); }
-.mismatch-comparison { margin-top: 9px; padding: 8px 10px; border-left: 2px solid var(--amber); background: rgba(255,190,90,.06); }
+.mismatch-comparison { grid-column: 1 / -1; min-width: 0; margin-top: 9px; padding: 8px 10px; border-left: 2px solid var(--amber); background: rgba(255,190,90,.06); }
 .mismatch-comparison p { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 3px 0; font-size: 11px; }
 .mismatch-comparison p > span:first-child { color: var(--amber); flex-shrink: 0; }
 .mismatch-comparison p > span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }

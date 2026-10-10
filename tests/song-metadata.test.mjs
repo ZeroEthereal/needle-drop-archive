@@ -46,6 +46,16 @@ test("unresolved metadata cannot fabricate a mismatch or overwrite stored identi
   await assert.rejects(client.getSongMetadata(["123"], session, "1000"), (error) => error.kind === "incomplete_response");
 });
 
+for (const source of ["standard", "cloud", "embedded"]) test(`${source} detail keeps aliases, translations and duration`, async () => {
+  const detail = { ...rawSong("Song"), alia: ["Alias", "Alias", "Second"], tns: ["Translation"], dt: 326999 };
+  const options = source === "cloud" ? { cloud: [{ songId: 123, simpleSong: detail }] } : { [source]: [detail] };
+  const { client } = clientFor(options);
+  const item = (await client.getSongMetadata(["123"], session, "1000")).songs[0].song;
+  assert.deepEqual(item.aliases, ["Alias", "Second"]);
+  assert.deepEqual(item.translations, ["Translation"]);
+  assert.equal(item.durationMs, 326999);
+});
+
 test("multiple staged baselines share the first identity and retain preceding mismatch evidence through grey", () => {
   const input = (title, playable = true) => ({ complete: true, observedAt: "2026-10-01T00:00:00Z",
     declaredTrackCount: 1, songs: [{ id: "123", title, artists: ["Singer"], album: null,

@@ -1,6 +1,6 @@
 import type { D1DatabasePort } from "./repository";
-import type { ManagedSongState, SyncPlan, SyncState } from "./state-machine";
-import { encodeSongUpserts, loadSongMetadata, propagateSourceSql, upsertSongsSql } from "./song-storage.ts";
+import type { ManagedSongState, SongDisplayMetadata, SyncPlan, SyncState } from "./state-machine";
+import { encodeSongUpserts, loadSongMetadata, propagateSourceSql, readSongDisplayMetadata, upsertSongsSql, type SongDisplayDbRow } from "./song-storage.ts";
 
 export interface MonitoredPlaylist {
   id: string;
@@ -153,7 +153,7 @@ export async function completeSongEverywhere(db: D1DatabasePort, songId: string,
   return row ? "normal" : "not_found";
 }
 
-export interface MultiRecoveryRow {
+export interface MultiRecoveryRow extends SongDisplayMetadata {
   songId: string; type: "missing" | "grey" | "mismatch"; title: string; artists: string[];
   album: string | null; coverUrl: string | null; neteaseUrl: string;
   observedTitle: string | null; observedArtists: string[] | null;
@@ -171,6 +171,7 @@ export async function listMultiRecovery(db: D1DatabasePort, options: {
   const [page, count] = await Promise.all([
     db.prepare(`SELECT songs.id AS song_id, songs.title, songs.artists, songs.album,
       songs.cover_url, songs.netease_url, songs.observed_title, songs.observed_artists,
+      songs.aliases, songs.translations, songs.duration_ms,
       (SELECT CASE WHEN SUM(x.anomaly_type = 'missing') > 0 THEN 'missing' WHEN SUM(x.anomaly_type = 'grey') > 0 THEN 'grey' ELSE 'mismatch' END
        FROM playlist_song_states x WHERE x.song_id = songs.id AND x.bucket = 'anomaly') AS type,
       (SELECT MIN(x.last_playable_at) FROM playlist_song_states x WHERE x.song_id = songs.id
@@ -188,7 +189,7 @@ export async function listMultiRecovery(db: D1DatabasePort, options: {
         WHERE x.song_id = songs.id AND x.bucket = 'anomaly') DESC, songs.id DESC
       LIMIT ? OFFSET ?`).bind(options.type ?? null, options.type ?? null,
         options.playlistId ?? null, options.playlistId ?? null,
-        query, query, query, query, limit + 1, offset).all<{
+        query, query, query, query, limit + 1, offset).all<SongDisplayDbRow & {
           song_id: string; title: string; artists: string; album: string | null;
           cover_url: string | null; netease_url: string; type: "missing" | "grey" | "mismatch";
           observed_title: string | null; observed_artists: string | null;
@@ -204,7 +205,7 @@ export async function listMultiRecovery(db: D1DatabasePort, options: {
   const found = page.results ?? [];
   return {
     items: found.slice(0, limit).map((row) => ({
-      songId: row.song_id, type: row.type, title: row.title,
+      ...readSongDisplayMetadata(row), songId: row.song_id, type: row.type, title: row.title,
       artists: JSON.parse(row.artists), album: row.album, coverUrl: row.cover_url,
       neteaseUrl: row.netease_url, lastNormalAt: row.last_normal_at,
       observedTitle: row.type === "mismatch" ? row.observed_title : null,
@@ -224,14 +225,15 @@ export async function listPlaylistSongs(db: D1DatabasePort, playlistId: string, 
   const query = `%${(options.query ?? "").trim()}%`;
   const [page, count] = await Promise.all([
     db.prepare(`SELECT songs.id, songs.title, songs.artists, songs.album,
-      songs.cover_url, songs.netease_url, songs.observed_title, songs.observed_artists, s.first_seen_at, s.last_seen_at,
+      songs.cover_url, songs.netease_url, songs.observed_title, songs.observed_artists,
+      songs.aliases, songs.translations, songs.duration_ms, s.first_seen_at, s.last_seen_at,
       s.last_confirmed_at,
       CASE WHEN s.bucket = 'anomaly' THEN s.anomaly_type ELSE 'playable' END AS state
       FROM playlist_song_states s JOIN songs ON songs.id = s.song_id
       WHERE s.playlist_id = ? AND (? IS NULL OR CASE WHEN s.bucket = 'anomaly' THEN s.anomaly_type ELSE 'playable' END = ?) AND (? = '%%' OR songs.title LIKE ? OR songs.artists LIKE ?
         OR COALESCE(songs.album, '') LIKE ?)
       ORDER BY s.last_seen_at DESC, songs.id DESC LIMIT ? OFFSET ?`)
-      .bind(playlistId, options.state ?? null, options.state ?? null, query, query, query, query, limit + 1, offset).all<{
+      .bind(playlistId, options.state ?? null, options.state ?? null, query, query, query, query, limit + 1, offset).all<SongDisplayDbRow & {
         id: string; title: string; artists: string; album: string | null;
         cover_url: string | null; netease_url: string; first_seen_at: string;
         last_seen_at: string; last_confirmed_at: string; state: string;
@@ -245,7 +247,7 @@ export async function listPlaylistSongs(db: D1DatabasePort, playlistId: string, 
   const found = page.results ?? [];
   return {
     items: found.slice(0, limit).map((row) => ({
-      id: row.id, title: row.title, artists: JSON.parse(row.artists), album: row.album,
+      ...readSongDisplayMetadata(row), id: row.id, title: row.title, artists: JSON.parse(row.artists), album: row.album,
       coverUrl: row.cover_url, neteaseUrl: row.netease_url,
       firstSeenAt: row.first_seen_at, lastSeenAt: row.last_seen_at,
       lastConfirmedAt: row.last_confirmed_at, state: row.state,

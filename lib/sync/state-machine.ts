@@ -1,7 +1,13 @@
 export type RecoveryType = "missing" | "grey" | "mismatch";
 export type ManagedBucket = "normal" | "anomaly";
 
-export interface SnapshotSong {
+export interface SongDisplayMetadata {
+  aliases?: string[] | null;
+  translations?: string[] | null;
+  durationMs?: number | null;
+}
+
+export interface SnapshotSong extends SongDisplayMetadata {
   id: string;
   title: string;
   artists: string[];
@@ -37,7 +43,7 @@ export interface SyncState {
   songs?: SongMetadata[];
 }
 
-export interface SongMetadata {
+export interface SongMetadata extends SongDisplayMetadata {
   id: string;
   title: string;
   artists: string[];
@@ -185,6 +191,9 @@ export function planSnapshotSync(
       artists: stored?.artists ?? song.artists,
       album: sourceState !== "normal" && stored ? stored.album : song.album,
       coverUrl: sourceState !== "normal" && stored ? stored.coverUrl : song.coverUrl,
+      aliases: sourceState !== "normal" && stored ? stored.aliases ?? null : song.aliases ?? null,
+      translations: sourceState !== "normal" && stored ? stored.translations ?? null : song.translations ?? null,
+      durationMs: sourceState !== "normal" && stored ? stored.durationMs ?? null : song.durationMs ?? null,
       neteaseUrl: stored?.neteaseUrl ?? song.neteaseUrl ??
         `https://music.163.com/#/song?id=${encodeURIComponent(song.id)}`,
       observedTitle: sourceState === "grey" ? stored?.observedTitle ?? null :

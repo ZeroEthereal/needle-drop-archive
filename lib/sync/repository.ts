@@ -1,5 +1,5 @@
-import type { ManagedSongState, SyncPlan, SyncState } from "./state-machine";
-import { encodeSongUpserts, loadSongMetadata, upsertSongsSql, propagateSourceSql } from "./song-storage.ts";
+import type { ManagedSongState, SongDisplayMetadata, SyncPlan, SyncState } from "./state-machine";
+import { encodeSongUpserts, loadSongMetadata, upsertSongsSql, propagateSourceSql, readSongDisplayMetadata, type SongDisplayDbRow } from "./song-storage.ts";
 import { completeSongEverywhere, loadPlaylistSyncState } from "./multi-repository.ts";
 
 export interface D1ResultPort<T = Record<string, unknown>> {
@@ -384,7 +384,7 @@ export async function completeManagedSong(
   return current?.bucket === "normal" ? "normal" : "not_found";
 }
 
-export interface RecoveryListRow {
+export interface RecoveryListRow extends SongDisplayMetadata {
   songId: string;
   type: "missing" | "grey" | "mismatch";
   observedTitle: string | null;
@@ -401,7 +401,7 @@ export interface RecoveryListRow {
   confirmedAt: string;
 }
 
-interface RecoveryListDbRow {
+interface RecoveryListDbRow extends SongDisplayDbRow {
   song_id: string;
   type: "missing" | "grey" | "mismatch";
   observed_title: string | null;
@@ -428,7 +428,7 @@ export async function listOpenRecovery(
   const query = `%${(options.query ?? "").trim()}%`;
   const type = options.type ?? null;
   const result = await db.prepare(`
-    SELECT m.song_id, m.anomaly_type AS type, s.title, s.artists, s.album, s.observed_title, s.observed_artists,
+    SELECT m.song_id, m.anomaly_type AS type, s.title, s.artists, s.album, s.observed_title, s.observed_artists, s.aliases, s.translations, s.duration_ms,
            s.cover_url, s.netease_url, m.first_seen_at, m.last_seen_at,
            ${hasLastConfirmedAt ? "m.last_confirmed_at," : "m.last_seen_at AS last_confirmed_at,"} m.last_playable_at AS last_normal_at, m.confirmed_at
     FROM managed_songs m
@@ -443,7 +443,7 @@ export async function listOpenRecovery(
   const hasMore = found.length > limit;
   return {
     items: found.slice(0, limit).map((row) => ({
-      songId: row.song_id,
+      ...readSongDisplayMetadata(row), songId: row.song_id,
       type: row.type,
       observedTitle: row.type === "mismatch" ? row.observed_title : null,
       observedArtists: row.type === "mismatch" && row.observed_artists !== null ? JSON.parse(row.observed_artists) : null,
@@ -462,7 +462,7 @@ export async function listOpenRecovery(
   };
 }
 
-export interface LikeListRow {
+export interface LikeListRow extends SongDisplayMetadata {
   id: string;
   title: string;
   artists: string[];
@@ -475,7 +475,7 @@ export interface LikeListRow {
   state: "playable" | "grey" | "missing" | "mismatch";
 }
 
-interface LikeListDbRow {
+interface LikeListDbRow extends SongDisplayDbRow {
   id: string;
   title: string;
   artists: string;
@@ -498,7 +498,7 @@ export async function listCurrentLikes(
   const query = `%${(options.query ?? "").trim()}%`;
   const [listResult, countRow] = await Promise.all([
     db.prepare(`
-      SELECT s.id, s.title, s.artists, s.album, s.cover_url, s.netease_url,
+      SELECT s.id, s.title, s.artists, s.album, s.cover_url, s.netease_url, s.aliases, s.translations, s.duration_ms,
              m.first_seen_at, m.last_seen_at, ${hasLastConfirmedAt ? "m.last_confirmed_at" : "m.last_seen_at AS last_confirmed_at"},
              CASE
                WHEN m.bucket = 'anomaly' THEN m.anomaly_type
@@ -521,7 +521,7 @@ export async function listCurrentLikes(
   const hasMore = found.length > limit;
   return {
     items: found.slice(0, limit).map((row) => ({
-      id: row.id,
+      ...readSongDisplayMetadata(row), id: row.id,
       title: row.title,
       artists: JSON.parse(row.artists) as string[],
       album: row.album,
