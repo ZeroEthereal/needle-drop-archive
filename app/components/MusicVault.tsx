@@ -7,6 +7,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -1424,6 +1425,7 @@ export function MusicVault() {
   const [statusState, setStatusState] = useState<LoadState>("loading");
   const [statusError, setStatusError] = useState<RequestJsonError>();
   const [syncing, setSyncing] = useState(false);
+  const [awaitingTaskStatus, setAwaitingTaskStatus] = useState(false);
   const [completingSongId, setCompletingSongId] = useState<string>();
   const [qrOpen, setQrOpen] = useState(false);
   const [qrLogin, setQrLogin] = useState<QrLogin>();
@@ -1445,6 +1447,8 @@ export function MusicVault() {
   const likesRequest = useRef(0);
   const completedBatchIds = useRef(new Set<string>());
   const initialStatusLoaded = useRef(false);
+  const statusRequestInFlight = useRef(false);
+  const taskStatusVersion = useRef(0);
   const recoverySearch = useDebounced(recoveryQuery);
   const likesSearch = useDebounced(likesQuery);
 
@@ -1464,13 +1468,6 @@ export function MusicVault() {
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    const update = () => setBackgrounded(document.visibilityState !== "visible");
-    update();
-    document.addEventListener("visibilitychange", update);
-    return () => document.removeEventListener("visibilitychange", update);
   }, []);
 
   useEffect(() => {
@@ -1575,11 +1572,17 @@ export function MusicVault() {
   }, [likesSearch, likesFilter, notify, selectedPlaylistId]);
 
   const loadStatus = useCallback(async (showLoading = false) => {
+    if (document.visibilityState !== "visible" || statusRequestInFlight.current) return;
+    statusRequestInFlight.current = true;
+    const version = taskStatusVersion.current;
     if (showLoading) setStatusState("loading");
     try {
       const raw = await requestJson([{ url: "/api/sync/status" }]);
+      // A response started before a new task cannot settle that task's status.
+      if (version !== taskStatusVersion.current) return;
       const next = normalizeStatus(raw);
       setStatus(next);
+      setAwaitingTaskStatus(false);
       setSelectedPlaylistId((current) => next.playlists?.some((p) => p.id === current)
         ? current : next.playlist?.id);
       const completed = next.completedBatch;
@@ -1592,9 +1595,12 @@ export function MusicVault() {
       setStatusError(undefined);
       setStatusState("ready");
     } catch (error) {
-      setStatus(undefined);
+      if (version !== taskStatusVersion.current) return;
+      // Keep the last task state so a transient failure does not stop progress polling.
       setStatusError(error instanceof RequestJsonError ? error : undefined);
       setStatusState("unavailable");
+    } finally {
+      statusRequestInFlight.current = false;
     }
   }, []);
 
@@ -1607,8 +1613,22 @@ export function MusicVault() {
     return () => window.clearTimeout(timer);
   }, [loadLikes]);
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadStatus(true), 0);
-    return () => window.clearTimeout(timer);
+    const update = () => {
+      const hidden = document.visibilityState !== "visible";
+      setBackgrounded(hidden);
+      if (!hidden) void loadStatus(false);
+    };
+    const timer = window.setTimeout(() => {
+      setBackgrounded(document.visibilityState !== "visible");
+      void loadStatus(true);
+    }, 0);
+    document.addEventListener("visibilitychange", update);
+    window.addEventListener("focus", update);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", update);
+      window.removeEventListener("focus", update);
+    };
   }, [loadStatus]);
 
   const refreshedForSyncAt = useRef<string | undefined>(undefined);
@@ -1622,15 +1642,11 @@ export function MusicVault() {
 
   useEffect(() => {
     const bindingActive = status?.binding?.state === "preparing" || status?.binding?.state === "running";
-    if (status?.state !== "running" && status?.state !== "queued" && !bindingActive) return;
+    if (backgrounded || (status?.state !== "running" && status?.state !== "queued"
+      && !bindingActive && !awaitingTaskStatus)) return;
     const timer = window.setInterval(() => void loadStatus(false), 2000);
     return () => window.clearInterval(timer);
-  }, [loadStatus, status?.binding?.state, status?.state]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => void loadStatus(false), 30000);
-    return () => window.clearInterval(timer);
-  }, [loadStatus]);
+  }, [awaitingTaskStatus, backgrounded, loadStatus, status?.binding?.state, status?.state]);
 
   const loadMoreLikes = useCallback(() => {
     if (!likesCursor || loadingMore) return;
@@ -1712,9 +1728,11 @@ export function MusicVault() {
     try {
       await requestJson([{ url: "/api/sync", init: { method: "POST",
         body: JSON.stringify(playlistId ? { playlistId } : {}) } }]);
+      taskStatusVersion.current += 1;
+      setAwaitingTaskStatus(true);
       setStatus((current) => current ? { ...current, state: "queued", phase: "同步任务已进入队列" } : current);
       notify("同步任务已经开始，页面会自动更新进度。", "good");
-      window.setTimeout(() => void loadStatus(false), 900);
+      void loadStatus(false);
     } catch (error) {
       notify(error instanceof Error ? error.message : "同步任务没有启动。", "bad");
     } finally {
@@ -1830,11 +1848,18 @@ export function MusicVault() {
     setPlaylistOpen(false);
   };
 
+  const onQrAuthorized = useEffectEvent((requiresSelection: boolean, flowId: string) => {
+    notify(requiresSelection ? "登录成功，请选择要守护的歌单。" : "重新授权成功，原歌单和全部历史已保留。", "good");
+    void loadStatus(false);
+    setQrOpen(false);
+    if (requiresSelection) void loadPlaylists(flowId);
+  });
+
   useEffect(() => {
-    if (!qrOpen || !qrLogin?.flowId || !["waiting_scan", "waiting_confirm"].includes(qrLogin.state)) return;
+    if (backgrounded || !qrOpen || !qrLogin?.flowId || !["waiting_scan", "waiting_confirm"].includes(qrLogin.state)) return;
     let checking = false;
     const check = async () => {
-      if (checking) return;
+      if (document.visibilityState !== "visible" || checking) return;
       checking = true;
       try {
         const raw = unwrap(await requestJson([
@@ -1845,11 +1870,7 @@ export function MusicVault() {
         const state = rawState === "same_account_authorized" ? "authorized" : qrState(rawState ?? record.code);
         setQrLogin((current) => current ? { ...current, state, message: firstString(record.message, record.reason) } : current);
         if (state === "authorized") {
-          const requiresSelection = record.requiresPlaylistSelection === true;
-          notify(requiresSelection ? "登录成功，请选择要守护的歌单。" : "重新授权成功，原歌单和全部历史已保留。", "good");
-          void loadStatus(false);
-          setQrOpen(false);
-          if (requiresSelection) void loadPlaylists(qrLogin.flowId);
+          onQrAuthorized(record.requiresPlaylistSelection === true, qrLogin.flowId);
         }
       } catch {
         // A transient poll failure should not destroy a still-valid QR code.
@@ -1857,10 +1878,10 @@ export function MusicVault() {
         checking = false;
       }
     };
-    const timer = window.setInterval(() => void check(), 1900);
+    const timer = window.setInterval(() => void check(), 2000);
     void check();
     return () => window.clearInterval(timer);
-  }, [loadPlaylists, loadStatus, notify, qrLogin?.flowId, qrLogin?.state, qrOpen]);
+  }, [backgrounded, qrLogin?.flowId, qrLogin?.state, qrOpen]);
 
   const togglePlaylistChoice = (id: string) => setSelectedPlaylistIds((current) =>
     current.includes(id) ? current.filter((item) => item !== id) : current.length >= 20 ? current : [...current, id]);
@@ -1882,6 +1903,8 @@ export function MusicVault() {
           playlistIds: selectedPlaylistIds, confirmedRemoval,
           freshBaseline, confirmedFreshBaseline: freshBaseline }) },
       }]);
+      taskStatusVersion.current += 1;
+      setAwaitingTaskStatus(true);
       setPlaylistOpen(false);
       notify(freshBaseline ? "正在从网易云完整重建全部已选歌单基线；成功后替换旧状态。"
         : "正在完整读取新增歌单；全部成功后才会更新选择。", "good");
