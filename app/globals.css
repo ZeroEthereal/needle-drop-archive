@@ -917,7 +917,7 @@ input:focus-visible {
 
 .recovery-grid {
   display: grid;
-  grid-template-columns: minmax(0,2.4fr) minmax(0,1.1fr) minmax(0,1.3fr) 48px 76px 88px minmax(0,1.15fr) minmax(96px,1.5fr);
+  grid-template-columns: minmax(0,2.4fr) minmax(0,1.1fr) minmax(0,1.3fr) 48px 76px 88px minmax(0,1.15fr) 230px;
   gap: 14px;
 }
 
@@ -1078,7 +1078,7 @@ input:focus-visible {
 
 .row-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
@@ -2225,7 +2225,8 @@ input:focus-visible {
   :root { --sidebar: 224px; }
   .content-stage { padding-inline: 30px; }
   .vinyl-hero { grid-template-columns: 1.2fr .8fr; }
-  .recovery-grid { gap: 10px; }
+  .recovery-grid { grid-template-columns: minmax(90px,2.4fr) minmax(0,1.1fr) minmax(0,1.3fr) 40px 70px 78px minmax(0,1.15fr) 230px; gap: 8px; }
+  .view-recovery .toolbar { flex-wrap: wrap; }
   .likes-grid { grid-template-columns: minmax(0,2.3fr) minmax(0,1.15fr) minmax(0,1.6fr) 44px 78px 78px 60px; gap: 10px; }
   .connection-card { grid-template-columns: auto 1fr; }
   .connection-actions { grid-column: 1 / -1; grid-template-columns: repeat(2,max-content); }
@@ -2286,7 +2287,7 @@ input:focus-visible {
   .recovery-status { grid-column: 2; grid-row: 2; justify-self: end; }
   .recovery-row > time { display: none; }
   .recovery-row .recovery-contexts { grid-column: 1 / -1; }
-  .recovery-row .row-actions { grid-column: 1 / -1; justify-content: flex-end; }
+  .recovery-row .row-actions { grid-column: 1 / -1; justify-content: flex-end; flex-wrap: wrap; }
   .likes-grid { grid-template-columns: minmax(0,1fr) auto; }
   .like-row .song-cell { grid-column: 1; grid-row: 1 / span 2; }
   .like-row .duration-cell { grid-column: 2; grid-row: 1; justify-self: end; }
