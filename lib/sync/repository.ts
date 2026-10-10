@@ -221,18 +221,20 @@ export async function commitSyncPlan(
     const guard = "EXISTS (SELECT 1 FROM instance_config WHERE id = 'primary' AND binding_version = ? AND status = 'ready')";
     statements.push(db.prepare(`INSERT INTO playlist_song_states
       (playlist_id, song_id, bucket, anomaly_type, first_seen_at, last_seen_at, last_confirmed_at,
-       last_playable_at, confirmed_at, created_at, updated_at)
+       last_playable_at, confirmed_at, created_at, updated_at, playlist_position)
       SELECT i.playlist_id, json_extract(value, '$.songId'), json_extract(value, '$.bucket'),
         json_extract(value, '$.anomalyType'), json_extract(value, '$.firstSeenAt'),
         json_extract(value, '$.lastSeenAt'), json_extract(value, '$.lastConfirmedAt'),
         json_extract(value, '$.lastPlayableAt'), json_extract(value, '$.confirmedAt'),
-        json_extract(value, '$.createdAt'), json_extract(value, '$.updatedAt')
+        json_extract(value, '$.createdAt'), json_extract(value, '$.updatedAt'),
+        json_extract(value, '$.playlistPosition')
       FROM json_each(?) CROSS JOIN instance_config i JOIN monitored_playlists p ON p.id = i.playlist_id
       WHERE i.id = 'primary' AND i.binding_version = ? AND i.status = 'ready'
       ON CONFLICT(playlist_id, song_id) DO UPDATE SET bucket = excluded.bucket,
         anomaly_type = excluded.anomaly_type, last_seen_at = excluded.last_seen_at,
         last_confirmed_at = excluded.last_confirmed_at, last_playable_at = excluded.last_playable_at,
-        confirmed_at = excluded.confirmed_at, updated_at = excluded.updated_at`)
+        confirmed_at = excluded.confirmed_at, updated_at = excluded.updated_at,
+        playlist_position = excluded.playlist_position`)
       .bind(JSON.stringify(plan.managedSongUpserts), options.bindingVersion));
     statements.push(db.prepare(propagateSourceSql(guard)).bind(encodeSongUpserts(plan.songUpserts),
       plan.observedAt, plan.observedAt, plan.observedAt, plan.observedAt, plan.observedAt, options.bindingVersion));

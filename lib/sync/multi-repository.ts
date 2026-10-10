@@ -57,17 +57,17 @@ export function defaultPlaylist(playlists: MonitoredPlaylist[]): MonitoredPlayli
 
 export async function loadPlaylistSyncState(db: D1DatabasePort, playlistId: string): Promise<SyncState> {
   const result = await db.prepare(`
-    SELECT song_id, bucket, anomaly_type, first_seen_at, last_seen_at,
+    SELECT song_id, playlist_position, bucket, anomaly_type, first_seen_at, last_seen_at,
            last_confirmed_at, last_playable_at, confirmed_at, created_at, updated_at
     FROM playlist_song_states WHERE playlist_id = ?
   `).bind(playlistId).all<{
-    song_id: string; bucket: "normal" | "anomaly"; anomaly_type: "missing" | "grey" | "mismatch" | null;
+    song_id: string; playlist_position: number | null; bucket: "normal" | "anomaly"; anomaly_type: "missing" | "grey" | "mismatch" | null;
     first_seen_at: string; last_seen_at: string; last_confirmed_at: string;
     last_playable_at: string | null; confirmed_at: string | null; created_at: string; updated_at: string;
   }>();
   if (!result.success) throw new Error(result.error || "Could not load playlist state");
   return { songs: await loadSongMetadata(db), managedSongs: (result.results ?? []).map((row): ManagedSongState => ({
-    songId: row.song_id, bucket: row.bucket, anomalyType: row.anomaly_type,
+    songId: row.song_id, playlistPosition: row.playlist_position, bucket: row.bucket, anomalyType: row.anomaly_type,
     firstSeenAt: row.first_seen_at, lastSeenAt: row.last_seen_at,
     lastConfirmedAt: row.last_confirmed_at, lastPlayableAt: row.last_playable_at,
     confirmedAt: row.confirmed_at, createdAt: row.created_at, updatedAt: row.updated_at,
@@ -87,18 +87,19 @@ export async function commitPlaylistSyncPlan(
       playlistId, bindingVersion, batchId, bindingVersion),
     db.prepare(`INSERT INTO playlist_song_states (
       playlist_id, song_id, bucket, anomaly_type, first_seen_at, last_seen_at,
-      last_confirmed_at, last_playable_at, confirmed_at, created_at, updated_at)
+      last_confirmed_at, last_playable_at, confirmed_at, created_at, updated_at, playlist_position)
       SELECT ?, json_extract(value, '$.songId'), json_extract(value, '$.bucket'),
         json_extract(value, '$.anomalyType'), json_extract(value, '$.firstSeenAt'),
         json_extract(value, '$.lastSeenAt'), json_extract(value, '$.lastConfirmedAt'),
         json_extract(value, '$.lastPlayableAt'), json_extract(value, '$.confirmedAt'),
-        json_extract(value, '$.createdAt'), json_extract(value, '$.updatedAt')
+        json_extract(value, '$.createdAt'), json_extract(value, '$.updatedAt'),
+        json_extract(value, '$.playlistPosition')
       FROM json_each(?) WHERE ${guard}
       ON CONFLICT(playlist_id, song_id) DO UPDATE SET
         bucket = excluded.bucket, anomaly_type = excluded.anomaly_type,
         last_seen_at = excluded.last_seen_at, last_confirmed_at = excluded.last_confirmed_at,
         last_playable_at = excluded.last_playable_at, confirmed_at = excluded.confirmed_at,
-        updated_at = excluded.updated_at`
+        updated_at = excluded.updated_at, playlist_position = excluded.playlist_position`
     ).bind(playlistId, JSON.stringify(plan.managedSongUpserts), playlistId,
       bindingVersion, batchId, bindingVersion),
     db.prepare(`UPDATE sync_playlist_tasks SET status = 'success', phase = 'complete',
@@ -232,7 +233,7 @@ export async function listPlaylistSongs(db: D1DatabasePort, playlistId: string, 
       FROM playlist_song_states s JOIN songs ON songs.id = s.song_id
       WHERE s.playlist_id = ? AND (? IS NULL OR CASE WHEN s.bucket = 'anomaly' THEN s.anomaly_type ELSE 'playable' END = ?) AND (? = '%%' OR songs.title LIKE ? OR songs.artists LIKE ?
         OR COALESCE(songs.album, '') LIKE ?)
-      ORDER BY s.last_seen_at DESC, songs.id DESC LIMIT ? OFFSET ?`)
+      ORDER BY s.playlist_position IS NULL, s.playlist_position, s.last_seen_at DESC, songs.id DESC LIMIT ? OFFSET ?`)
       .bind(playlistId, options.state ?? null, options.state ?? null, query, query, query, query, limit + 1, offset).all<SongDisplayDbRow & {
         id: string; title: string; artists: string; album: string | null;
         cover_url: string | null; netease_url: string; first_seen_at: string;

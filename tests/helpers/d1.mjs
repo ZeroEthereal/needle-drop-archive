@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readdirSync, readFileSync } from "node:fs";
 
 export class TestD1 {
-  constructor({ through = "0010" } = {}) {
+  constructor({ through = "0011" } = {}) {
     this.sqlite = new DatabaseSync(":memory:");
     this.sqlite.exec("PRAGMA foreign_keys = ON");
     const directory = new URL("../../drizzle/", import.meta.url);

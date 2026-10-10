@@ -27,6 +27,8 @@ export interface CompletePlaylistSnapshot {
 
 export interface ManagedSongState {
   songId: string;
+  /** Playlist-local display slot, retained while the song is missing. */
+  playlistPosition?: number | null;
   bucket: ManagedBucket;
   anomalyType: RecoveryType | null;
   firstSeenAt: string;
@@ -180,6 +182,13 @@ export function planSnapshotSync(
     state.managedSongs.map((row) => [row.songId, { ...row }]),
   );
   const snapshotById = new Map(snapshot.songs.map((song) => [song.id, song]));
+  const reservedPositions = new Set<number>();
+  for (const row of original.values()) {
+    if (!snapshotById.has(row.songId) && typeof row.playlistPosition === "number" &&
+      Number.isSafeInteger(row.playlistPosition) && row.playlistPosition >= 0)
+      reservedPositions.add(row.playlistPosition);
+  }
+  let nextPosition = 0;
   const metadataById = new Map((state.songs ?? []).map((song) => [song.id, song]));
   const songUpserts: SongUpsert[] = snapshot.songs.map((song) => {
     const stored = metadataById.get(song.id);
@@ -211,6 +220,7 @@ export function planSnapshotSync(
   let newCount = 0;
 
   for (const song of songUpserts) {
+    while (reservedPositions.has(nextPosition)) nextPosition += 1;
     const existing = managed.get(song.id);
     const type = song.sourceState === "normal" ? null : song.sourceState;
     const next: ManagedSongState = {
@@ -223,6 +233,7 @@ export function planSnapshotSync(
         confirmedAt: null,
         createdAt: observedAt,
       } satisfies Partial<ManagedSongState>),
+      playlistPosition: nextPosition++,
       bucket: type ? "anomaly" : "normal",
       anomalyType: type,
       lastSeenAt: observedAt,

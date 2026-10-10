@@ -42,12 +42,16 @@ export async function preparePlaylistBaseline(env: Env, bindingId: string, playl
   const selections = pendingSelection(pending).playlists;
   if (!selections.some((playlist) => playlist.id === playlistId))
     throw new Error("Playlist is not part of this selection");
-  const existing = await env.DB.prepare(`SELECT playlist_id, song_json FROM pending_playlist_baselines
+  const existing = await env.DB.prepare(`SELECT playlist_id, song_json, state_json FROM pending_playlist_baselines
     WHERE binding_id = ? AND playlist_id = ?`).bind(bindingId, playlistId)
-    .first<{ playlist_id: string; song_json: string }>();
+    .first<{ playlist_id: string; song_json: string; state_json: string }>();
   if (existing && (JSON.parse(existing.song_json) as Array<{ sourceState?: string; aliases?: unknown; translations?: unknown; durationMs?: unknown }>)
     .every((song) => song.sourceState !== undefined && song.aliases !== undefined &&
-      song.translations !== undefined && song.durationMs !== undefined)) return { playlistId, staged: true };
+      song.translations !== undefined && song.durationMs !== undefined) &&
+    (JSON.parse(existing.state_json) as Array<{ playlistPosition?: number }>)
+      .every((state) => typeof state.playlistPosition === "number" &&
+        Number.isSafeInteger(state.playlistPosition) && state.playlistPosition >= 0))
+    return { playlistId, staged: true };
   const stored = await loadNeteaseSession(env, pending.session_id);
   if (!stored || stored.uid !== pending.account_uid) throw new Error("Pending NetEase session is unavailable");
   const client = new NeteaseClient();
@@ -186,12 +190,13 @@ async function activateSelection(env: Env, pending: PendingSet, selections: Play
       .bind(row.song_json, nextVersion, pending.account_uid));
     statements.push(env.DB.prepare(`INSERT INTO playlist_song_states
       (playlist_id, song_id, bucket, anomaly_type, first_seen_at, last_seen_at,
-       last_confirmed_at, last_playable_at, confirmed_at, created_at, updated_at)
+       last_confirmed_at, last_playable_at, confirmed_at, created_at, updated_at, playlist_position)
       SELECT ?, json_extract(value, '$.songId'), json_extract(value, '$.bucket'),
         json_extract(value, '$.anomalyType'), json_extract(value, '$.firstSeenAt'),
         json_extract(value, '$.lastSeenAt'), json_extract(value, '$.lastConfirmedAt'),
         json_extract(value, '$.lastPlayableAt'), json_extract(value, '$.confirmedAt'),
-        json_extract(value, '$.createdAt'), json_extract(value, '$.updatedAt')
+        json_extract(value, '$.createdAt'), json_extract(value, '$.updatedAt'),
+        json_extract(value, '$.playlistPosition')
       FROM json_each(?) WHERE ${guard}`)
       .bind(item.id, row.state_json, nextVersion, pending.account_uid));
   }
