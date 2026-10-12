@@ -62,7 +62,7 @@ try {
     if ($NonInteractive) {
       throw "D1 '$DatabaseName' already exists. Rerun with -ReuseExisting only after confirming that this is the intended instance."
     }
-    $reuseAnswer = Read-Host "D1 '$DatabaseName' already exists. Reuse it and create a Desktop backup before migration? [y/N]"
+    $reuseAnswer = Read-Host "D1 '$DatabaseName' already exists. Reuse it? [y/N]"
     if ($reuseAnswer -notmatch '^(?i:y|yes)$') {
       throw "Existing resource reuse was not confirmed; nothing was migrated or deployed."
     }
@@ -75,18 +75,6 @@ try {
     -Confirm:$false
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $privateConfig)) {
     throw "Cloudflare resource bootstrap did not finish."
-  }
-
-  if ($databaseExisted) {
-    $desktop = [Environment]::GetFolderPath("Desktop")
-    $backupDirectory = Join-Path $desktop "needle-drop-archive-backups"
-    if (-not (Test-Path -LiteralPath $backupDirectory)) {
-      New-Item -ItemType Directory -Path $backupDirectory | Out-Null
-    }
-    $backupPath = Join-Path $backupDirectory ("{0}-{1}.sql" -f $DatabaseName, (Get-Date -Format "yyyyMMdd-HHmmss"))
-    $backupOutput = (& $npx wrangler d1 export DB --remote --output $backupPath --config $privateConfig 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0) { throw "Remote D1 backup failed; deployment was not started. Inspect Cloudflare activity logs for details." }
-    Write-Host "Remote D1 backup created on the Desktop."
   }
 
   $env:CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH = $privateConfig

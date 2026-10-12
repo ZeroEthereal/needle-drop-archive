@@ -75,14 +75,14 @@ Deploy to Cloudflare 会为新实例自动配置 D1 binding，并把实际 bindi
 
 旧网易会话密文无法恢复，但歌曲基线和历史不需要删除：
 
-1. 先导出并备份远程 D1；
+1. 核对目标实例、监控选择与当前密钥状态；
 2. 不要删除 `instance_config`、`monitored_playlists`、`songs`、`playlist_song_states`、`sync_batches` 或 `sync_playlist_tasks`；
 3. 清理 `pending_playlist_sets`、`netease_auth_flows` 和 `netease_sessions` 中无法解密的会话流程；
 4. 生成新的 32 字节随机密钥，并通过 `wrangler secret put SESSION_ENCRYPTION_KEY` 保存；
 5. 打开网站执行“重新授权”，重新建立加密会话；
 6. 手动全量同步一次，确认已监控歌单仍然存在。
 
-清理顺序必须先处理待绑定记录，再处理认证流程和会话，以满足 D1 外键约束。执行任何恢复 SQL 前都应先备份数据库。
+清理顺序必须先处理待绑定记录，再处理认证流程和会话，以满足 D1 外键约束。恢复操作必须核对目标实例，业务数据可按当前网易云快照重建。
 
 ### 怀疑密钥或 Cookie 已泄露
 
@@ -105,4 +105,4 @@ Cloudflare Access 和网易扫码是两套独立身份：
 
 ## 支持范围
 
-以仓库最新正式 GitHub Release 为主要审计和支持对象；旧版本可能要求先升级后再提供修复。
+以当前正式架构和最新 GitHub Release 为审计与支持对象。

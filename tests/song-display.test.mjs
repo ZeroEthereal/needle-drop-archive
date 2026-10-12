@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
 import { normalizeSongTextList, songSubtitle, formatSongDuration } from "../lib/song-display.ts";
 import { planSnapshotSync } from "../lib/sync/state-machine.ts";
 import { decodeSongUpserts, encodeSongUpserts } from "../lib/sync/song-storage.ts";
-import { commitPlaylistSyncPlan, listMultiRecovery, listPlaylistSongs, loadPlaylistSyncState } from "../lib/sync/multi-repository.ts";
+import { commitPlaylistSyncPlan, listMultiRecovery, listPlaylistSongs, loadPlaylistSyncState } from "../lib/sync/repository.ts";
 import { TestD1, setupPlaylists } from "./helpers/d1.mjs";
 
 const song = (extra = {}) => ({ id: "123", title: "Original", artists: ["Singer"], album: "Album",
@@ -80,22 +79,18 @@ test("normal metadata-only changes do not produce mismatch and missing fields cl
   assert.equal(row.state, "playable"); assert.equal(songSubtitle(row), ""); assert.equal(row.durationMs, null);
 });
 
-test("staged metadata round-trips arrays and supports older payloads with absent optional fields", () => {
+test("staged metadata round-trips current arrays and nullable fields", () => {
   const plan = planSnapshotSync({ complete: true, declaredTrackCount: 1, songs: [song()],
-    observedAt: "2026-10-01T00:00:00Z" }, { managedSongs: [] }, false);
+    observedAt: "2026-10-01T00:00:00Z" }, { playlistSongs: [] }, false);
   assert.deepEqual(decodeSongUpserts(encodeSongUpserts(plan.songUpserts)), plan.songUpserts);
-  const old = JSON.parse(encodeSongUpserts(plan.songUpserts));
-  delete old[0].aliases; delete old[0].translations; delete old[0].durationMs;
-  assert.equal(decodeSongUpserts(JSON.stringify(old))[0].durationMs, null);
 });
 
-test("migration leaves originals, references and prior mismatch evidence intact with NULL display metadata", (t) => {
-  const db = new TestD1({ through: "0009" }); t.after(() => db.close()); setupPlaylists(db, ["A"]);
+test("current schema keeps original identity and nullable display metadata", (t) => {
+  const db = new TestD1(); t.after(() => db.close()); setupPlaylists(db, ["A"]);
   db.sqlite.exec(`INSERT INTO songs (id,title,artists,netease_url,observed_title,observed_artists)
     VALUES ('123','Original','["Singer"]','https://music.163.com/song?id=123','Wrong','["Other"]');
     INSERT INTO playlist_song_states (playlist_id,song_id,bucket,anomaly_type,first_seen_at,last_seen_at,last_confirmed_at,confirmed_at)
     VALUES ('A','123','anomaly','mismatch','2026-10-01','2026-10-01','2026-10-01','2026-10-01')`);
-  db.sqlite.exec(readFileSync(new URL("../drizzle/0010_song_display_metadata.sql", import.meta.url), "utf8"));
   const row = db.sqlite.prepare("SELECT * FROM songs").get();
   assert.equal(row.title, "Original"); assert.equal(row.observed_title, "Wrong");
   assert.equal(row.aliases, null); assert.equal(row.translations, null); assert.equal(row.duration_ms, null);

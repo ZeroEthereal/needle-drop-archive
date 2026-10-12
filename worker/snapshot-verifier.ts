@@ -48,7 +48,7 @@ export async function verifySnapshotAnomalies(
   state: SyncState,
 ): Promise<AccountSnapshot> {
   const firstMembership = new Set(account.trackIds);
-  const suspectedMissing = state.managedSongs.filter(
+  const suspectedMissing = state.playlistSongs.filter(
     (row) => row.anomalyType !== "missing" && !firstMembership.has(row.songId),
   );
 
@@ -64,7 +64,7 @@ export async function verifySnapshotAnomalies(
     }
   }
 
-  const stateById = new Map(state.managedSongs.map((row) => [row.songId, row]));
+  const stateById = new Map(state.playlistSongs.map((row) => [row.songId, row]));
   const suspectedGreyIds = account.songs
     .filter((song) => {
       if (song.playable) return false;

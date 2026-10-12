@@ -83,7 +83,7 @@ test("a stable missing observation is accepted after a second complete membershi
   const client = fakeClient({ secondTrackIds: ["2"] });
   const snapshot = account([{ id: "2", playable: true }]);
   await verifySnapshotAnomalies(client, session, snapshot, {
-    managedSongs: [managed("1"), managed("2")],
+    playlistSongs: [managed("1"), managed("2")],
   });
   assert.equal(client.playlistCalls, 1);
   assert.equal(client.playbackCalls, 0);
@@ -94,7 +94,7 @@ test("a changing playlist aborts verification before state commit", async () => 
   const snapshot = account([{ id: "2", playable: true }]);
   await assert.rejects(
     verifySnapshotAnomalies(client, session, snapshot, {
-      managedSongs: [managed("1"), managed("2")],
+      playlistSongs: [managed("1"), managed("2")],
     }),
     (error) => error instanceof NeteaseError && error.kind === "incomplete_response",
   );
@@ -106,7 +106,7 @@ test("a second unplayable result confirms a grey observation", async () => {
   });
   const snapshot = account([{ id: "1", playable: false }]);
   const verified = await verifySnapshotAnomalies(client, session, snapshot, {
-    managedSongs: [managed("1")],
+    playlistSongs: [managed("1")],
   });
   assert.equal(verified.songs[0].playable, false);
   assert.equal(client.playbackCalls, 1);
@@ -118,7 +118,7 @@ test("a playable recheck suppresses a transient grey observation", async () => {
   });
   const snapshot = account([{ id: "1", playable: false }]);
   const verified = await verifySnapshotAnomalies(client, session, snapshot, {
-    managedSongs: [managed("1")],
+    playlistSongs: [managed("1")],
   });
   assert.equal(verified.songs[0].playable, true);
   assert.equal(verified.songs[0].playbackCode, 200);
@@ -132,7 +132,7 @@ test("verification failures are propagated instead of producing partial state", 
       client,
       session,
       account([{ id: "1", playable: false }]),
-      { managedSongs: [managed("1")] },
+      { playlistSongs: [managed("1")] },
     ),
     failure,
   );
@@ -142,13 +142,13 @@ test("no extra upstream request is made when no new anomaly is suspected", async
   const client = fakeClient();
   const snapshot = account([{ id: "1", playable: true }]);
   await verifySnapshotAnomalies(client, session, snapshot, {
-    managedSongs: [managed("1")],
+    playlistSongs: [managed("1")],
   });
   assert.equal(client.playlistCalls, 0);
   assert.equal(client.playbackCalls, 0);
 });
 
-const identityState = (observedTitle = null) => ({ managedSongs: [managed("1")], songs: [{
+const identityState = (observedTitle = null) => ({ playlistSongs: [managed("1")], songs: [{
   id: "1", title: "Original", artists: ["Artist"], album: "Album", coverUrl: null,
   observedTitle, observedArtists: observedTitle === null ? null : ["Artist"],
 }] });
@@ -187,7 +187,7 @@ test("restoration to the original identity is rechecked before clearing wrong me
 test("grey and mismatch turning missing also require a complete second membership read", async () => {
   for (const type of ["grey", "mismatch"]) {
     const client = fakeClient({ secondTrackIds: [] });
-    await verifySnapshotAnomalies(client, session, account([]), { managedSongs: [managed("1", "anomaly", type)] });
+    await verifySnapshotAnomalies(client, session, account([]), { playlistSongs: [managed("1", "anomaly", type)] });
     assert.equal(client.playlistCalls, 1);
   }
 });

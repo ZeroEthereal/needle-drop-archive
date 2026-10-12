@@ -1,11 +1,11 @@
 import type { Env } from "./env";
-import { ensureInstanceConfig, getInstanceConfig } from "./instance-config";
-import { listMonitoredPlaylists } from "../lib/sync/multi-repository";
+import { getInstanceConfig } from "./instance-config";
+import { listMonitoredPlaylists } from "../lib/sync/repository";
 
 export type BatchTrigger = "manual" | "scheduled";
 
 export async function createSyncBatch(env: Env, trigger: BatchTrigger, playlistId?: string): Promise<string> {
-  const config = await ensureInstanceConfig(env);
+  const config = await getInstanceConfig(env);
   if (config.status !== "ready" || !config.accountUid) throw new Error("INSTANCE_NOT_CONFIGURED");
   const all = await listMonitoredPlaylists(env.DB);
   const selected = playlistId ? all.filter((playlist) => playlist.id === playlistId) : all;

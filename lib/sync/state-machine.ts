@@ -1,5 +1,5 @@
 export type RecoveryType = "missing" | "grey" | "mismatch";
-export type ManagedBucket = "normal" | "anomaly";
+export type PlaylistBucket = "normal" | "anomaly";
 
 export interface SongDisplayMetadata {
   aliases?: string[] | null;
@@ -25,11 +25,11 @@ export interface CompletePlaylistSnapshot {
   songs: SnapshotSong[];
 }
 
-export interface ManagedSongState {
+export interface PlaylistSongState {
   songId: string;
   /** Playlist-local display slot, retained while the song is missing. */
   playlistPosition?: number | null;
-  bucket: ManagedBucket;
+  bucket: PlaylistBucket;
   anomalyType: RecoveryType | null;
   firstSeenAt: string;
   lastSeenAt: string;
@@ -41,7 +41,7 @@ export interface ManagedSongState {
 }
 
 export interface SyncState {
-  managedSongs: ManagedSongState[];
+  playlistSongs: PlaylistSongState[];
   songs?: SongMetadata[];
 }
 
@@ -67,10 +67,9 @@ export function sameSongIdentity(left: Pick<SnapshotSong, "title" | "artists">,
 
 export interface SyncPlan {
   observedAt: string;
-  shanghaiDate: string;
   baselineEstablished: boolean;
   songUpserts: SongUpsert[];
-  managedSongUpserts: ManagedSongState[];
+  playlistSongUpserts: PlaylistSongState[];
   result: {
     currentSongCount: number;
     newCount: number;
@@ -93,30 +92,13 @@ export class InvalidSnapshotError extends Error {
   }
 }
 
-const SHANGHAI_FORMATTER = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
-export function toShanghaiDate(value: string | Date): string {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    throw new InvalidSnapshotError("INVALID_OBSERVED_AT", "observedAt must be a valid timestamp");
-  }
-
-  const parts = Object.fromEntries(
-    SHANGHAI_FORMATTER.formatToParts(date).map((part) => [part.type, part.value]),
-  );
-  return `${parts.year}-${parts.month}-${parts.day}`;
-}
-
 export function assertCompleteSnapshot(
   snapshot: CompletePlaylistSnapshot,
   allowEmpty = false,
 ): CompletePlaylistSnapshot {
-  toShanghaiDate(snapshot.observedAt);
+  if (Number.isNaN(new Date(snapshot.observedAt).getTime())) {
+    throw new InvalidSnapshotError("INVALID_OBSERVED_AT", "observedAt must be a valid timestamp");
+  }
 
   if (snapshot.complete !== true) {
     throw new InvalidSnapshotError("INCOMPLETE_SNAPSHOT", "snapshot was not marked complete");
@@ -156,30 +138,27 @@ export function assertCompleteSnapshot(
   return snapshot;
 }
 
-function sameManagedSong(a: ManagedSongState, b: ManagedSongState): boolean {
+function samePlaylistSong(a: PlaylistSongState, b: PlaylistSongState): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /**
  * Pure state transition. The repository commits every returned upsert and the
- * successful sync_run as one atomic D1 batch.
+ * playlist task result as one atomic D1 batch.
  */
 export function planSnapshotSync(
   input: CompletePlaylistSnapshot,
   state: SyncState,
-  baselineAlreadyEstablished?: boolean,
+  baselineAlreadyEstablished: boolean,
 ): SyncPlan {
   const snapshot = assertCompleteSnapshot(input, baselineAlreadyEstablished === true);
   const observedAt = new Date(snapshot.observedAt).toISOString();
-  const shanghaiDate = toShanghaiDate(observedAt);
-  const baselineEstablished = baselineAlreadyEstablished === undefined
-    ? state.managedSongs.length === 0
-    : !baselineAlreadyEstablished;
+  const baselineEstablished = !baselineAlreadyEstablished;
   const original = new Map(
-    state.managedSongs.map((row) => [row.songId, { ...row }]),
+    state.playlistSongs.map((row) => [row.songId, { ...row }]),
   );
   const managed = new Map(
-    state.managedSongs.map((row) => [row.songId, { ...row }]),
+    state.playlistSongs.map((row) => [row.songId, { ...row }]),
   );
   const snapshotById = new Map(snapshot.songs.map((song) => [song.id, song]));
   const reservedPositions = new Set<number>();
@@ -223,7 +202,7 @@ export function planSnapshotSync(
     while (reservedPositions.has(nextPosition)) nextPosition += 1;
     const existing = managed.get(song.id);
     const type = song.sourceState === "normal" ? null : song.sourceState;
-    const next: ManagedSongState = {
+    const next: PlaylistSongState = {
       ...(existing ?? {
         songId: song.id,
         bucket: "normal",
@@ -232,7 +211,7 @@ export function planSnapshotSync(
         lastPlayableAt: null,
         confirmedAt: null,
         createdAt: observedAt,
-      } satisfies Partial<ManagedSongState>),
+      } satisfies Partial<PlaylistSongState>),
       playlistPosition: nextPosition++,
       bucket: type ? "anomaly" : "normal",
       anomalyType: type,
@@ -269,17 +248,16 @@ export function planSnapshotSync(
     }
   }
 
-  const managedSongUpserts = [...managed.values()].filter((row) => {
+  const playlistSongUpserts = [...managed.values()].filter((row) => {
     const before = original.get(row.songId);
-    return !before || !sameManagedSong(before, row);
+    return !before || !samePlaylistSong(before, row);
   });
 
   return {
     observedAt,
-    shanghaiDate,
     baselineEstablished,
     songUpserts,
-    managedSongUpserts,
+    playlistSongUpserts,
     result: {
       currentSongCount: managed.size,
       newCount,

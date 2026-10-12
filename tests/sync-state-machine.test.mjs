@@ -37,34 +37,34 @@ function snapshot(observedAt, songs) {
 }
 
 function apply(state, plan) {
-  const managed = new Map(state.managedSongs.map((row) => [row.songId, row]));
-  for (const row of plan.managedSongUpserts) managed.set(row.songId, row);
+  const managed = new Map(state.playlistSongs.map((row) => [row.songId, row]));
+  for (const row of plan.playlistSongUpserts) managed.set(row.songId, row);
   const songs = new Map((state.songs ?? []).map((row) => [row.id, row]));
   for (const row of plan.songUpserts) songs.set(row.id, row);
-  return { managedSongs: [...managed.values()], songs: [...songs.values()] };
+  return { playlistSongs: [...managed.values()], songs: [...songs.values()], baselineEstablished: true };
 }
 
 function sync(state, observedAt, songs) {
-  const plan = planSnapshotSync(snapshot(observedAt, songs), state);
+  const plan = planSnapshotSync(snapshot(observedAt, songs), state, state.baselineEstablished === true);
   return { plan, state: apply(state, plan) };
 }
 
 function managed(state, songId = songA.id) {
-  return state.managedSongs.find((row) => row.songId === songId);
+  return state.playlistSongs.find((row) => row.songId === songId);
 }
 
 test("rejects an incomplete snapshot before producing mutations", () => {
   assert.throws(
     () => planSnapshotSync(
       { observedAt: "2026-07-16T00:00:00Z", declaredTrackCount: 1, complete: true, songs: [] },
-      { managedSongs: [] },
+      { playlistSongs: [] }, false,
     ),
     (error) => error instanceof InvalidSnapshotError && error.code === "TRACK_COUNT_MISMATCH",
   );
 });
 
 test("a verified missing observation becomes an anomaly immediately", () => {
-  let state = { managedSongs: [] };
+  let state = { playlistSongs: [] };
   ({ state } = sync(state, "2026-07-15T01:00:00Z", [songA, stableSong]));
   const turn = sync(state, "2026-07-15T10:00:00Z", [stableSong]);
   assert.equal(managed(turn.state).bucket, "anomaly");
@@ -73,7 +73,7 @@ test("a verified missing observation becomes an anomaly immediately", () => {
 });
 
 test("a verified grey observation becomes an anomaly immediately", () => {
-  let state = { managedSongs: [] };
+  let state = { playlistSongs: [] };
   ({ state } = sync(state, "2026-07-15T01:00:00Z", [songA, stableSong]));
   const turn = sync(state, "2026-07-15T10:00:00Z", [
     { ...songA, accountPlayable: false },
@@ -86,7 +86,7 @@ test("a verified grey observation becomes an anomaly immediately", () => {
 
 test("an unplayable song in a new baseline is classified as grey", () => {
   const turn = sync(
-    { managedSongs: [] },
+    { playlistSongs: [] },
     "2026-07-15T01:00:00Z",
     [{ ...songA, accountPlayable: false }, stableSong],
   );
@@ -96,7 +96,7 @@ test("an unplayable song in a new baseline is classified as grey", () => {
 });
 
 test("a confirmed anomaly recovers after one playable observation", () => {
-  let state = { managedSongs: [] };
+  let state = { playlistSongs: [] };
   ({ state } = sync(state, "2026-07-15T01:00:00Z", [songA, stableSong]));
   ({ state } = sync(state, "2026-07-16T01:00:00Z", [stableSong]));
   assert.equal(managed(state).bucket, "anomaly");
@@ -109,7 +109,7 @@ test("a confirmed anomaly recovers after one playable observation", () => {
 });
 
 test("confirmed grey becomes missing after the favorite disappears", () => {
-  let state = { managedSongs: [] };
+  let state = { playlistSongs: [] };
   ({ state } = sync(state, "2026-07-15T01:00:00Z", [songA, stableSong]));
   ({ state } = sync(state, "2026-07-16T01:00:00Z", [{ ...songA, accountPlayable: false }, stableSong]));
   ({ state } = sync(state, "2026-07-17T01:00:00Z", [stableSong]));
@@ -119,7 +119,7 @@ test("confirmed grey becomes missing after the favorite disappears", () => {
 });
 
 test("confirmed missing becomes grey when it reappears but is unplayable", () => {
-  let state = { managedSongs: [] };
+  let state = { playlistSongs: [] };
   ({ state } = sync(state, "2026-07-15T01:00:00Z", [songA, stableSong]));
   ({ state } = sync(state, "2026-07-16T01:00:00Z", [stableSong]));
   ({ state } = sync(state, "2026-07-17T01:00:00Z", [{ ...songA, accountPlayable: false }, stableSong]));
@@ -129,12 +129,12 @@ test("confirmed missing becomes grey when it reappears but is unplayable", () =>
 });
 
 test("an anomalous old id and a replacement id remain independent", () => {
-  let state = { managedSongs: [] };
+  let state = { playlistSongs: [] };
   ({ state } = sync(state, "2026-07-15T01:00:00Z", [songA, stableSong]));
   ({ state } = sync(state, "2026-07-16T01:00:00Z", [stableSong]));
   ({ state } = sync(state, "2026-07-17T01:00:00Z", [replacementSong, stableSong]));
 
   assert.equal(managed(state, songA.id).bucket, "anomaly");
   assert.equal(managed(state, replacementSong.id).bucket, "normal");
-  assert.equal(state.managedSongs.length, 3);
+  assert.equal(state.playlistSongs.length, 3);
 });

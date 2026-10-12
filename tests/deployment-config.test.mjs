@@ -3,38 +3,19 @@ import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-test("email notifications are removed without removing Access email authentication", async () => {
-  const [config, access, env, api, runner, storage, component, initialMigration, removalMigration] = await Promise.all([
+test("current schema and production Access configuration are independent", async () => {
+  const [config, access, schema] = await Promise.all([
     readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
     readFile(new URL("../worker/access.ts", import.meta.url), "utf8"),
-    readFile(new URL("../worker/env.ts", import.meta.url), "utf8"),
-    readFile(new URL("../worker/api.ts", import.meta.url), "utf8"),
-    readFile(new URL("../worker/sync-runner.ts", import.meta.url), "utf8"),
-    readFile(new URL("../lib/sync/storage.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/components/MusicVault.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../drizzle/0000_eminent_betty_ross.sql", import.meta.url), "utf8"),
-    readFile(new URL("../drizzle/0001_remove_email_notifications.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0000_current_schema.sql", import.meta.url), "utf8"),
   ]);
-
-  const runtime = [config, access, env, api, runner, storage, component].join("\n");
-  assert.doesNotMatch(
-    runtime,
-    /RESEND|EMAIL_TO|RESEND_FROM|notification_events|\/api\/notifications|emailStatus|邮件通知/i,
-  );
   assert.match(access, /env\.ALLOWED_EMAIL/);
   assert.match(access, /jwtVerify\(token, jwks/);
   assert.doesNotMatch(config, /"(?:ALLOWED_EMAIL|ACCESS_TEAM_DOMAIN|ACCESS_AUD)"\s*:/);
-  assert.match(removalMigration, /DROP TABLE IF EXISTS `notification_events`/);
-
   const database = new DatabaseSync(":memory:");
-  database.exec(initialMigration);
-  assert.equal(
-    database.prepare("SELECT COUNT(*) AS total FROM notification_events").get().total,
-    0,
-  );
-  database.exec(removalMigration);
-  assert.throws(() => database.prepare("SELECT * FROM notification_events").all());
-  assert.equal(database.prepare("SELECT COUNT(*) AS total FROM songs").get().total, 0);
+  database.exec(schema);
+  assert.equal(database.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'").get().n, 11);
+  assert.equal(database.prepare("SELECT COUNT(*) AS n FROM songs").get().n, 0);
   database.close();
 });
 
@@ -62,7 +43,7 @@ test("the public Wrangler template is safe for Deploy to Cloudflare", async () =
   assert.doesNotMatch(setupScript, /D:\\dev/i);
   assert.ok(setupScript.indexOf("npm ci") < setupScript.indexOf("wrangler whoami"));
   assert.match(setupScript, /-ReuseExisting/);
-  assert.match(setupScript, /Remote D1 backup created on the Desktop/);
+  assert.doesNotMatch(setupScript, /d1 export|Desktop backup|backupDirectory/);
   assert.match(setupScript, /CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH\s*=\s*\$privateConfig/);
   assert.match(bootstrapScript, /Test-Path -LiteralPath \$configPath/);
   assert.match(bootstrapScript, /wrangler d1 list --json/);

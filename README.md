@@ -23,7 +23,7 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors up to 
 
 ### 2. 下载项目后让通用 Agent 辅助部署（Windows）
 
-把项目下载到 Windows 电脑，打开能够执行 Windows 终端命令的 Agent，复制 [Agent 部署提示词](./DEPLOY_WITH_AGENT.md)。Agent 会调用项目正式脚本完成检查、资源创建或复用、备份、迁移、构建和部署，只在 Cloudflare 登录授权、Access 网页设置及网易扫码时请用户参与。
+把项目下载到 Windows 电脑，打开能够执行 Windows 终端命令的 Agent，复制 [Agent 部署提示词](./DEPLOY_WITH_AGENT.md)。Agent 会调用项目正式脚本完成检查、资源创建或复用、迁移、构建和部署，只在 Cloudflare 登录授权、Access 网页设置及网易扫码时请用户参与。
 
 ### 3. 按文档手动部署
 
@@ -51,7 +51,7 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors up to 
 
 首次打开网站时，用户依次完成“连接网易云 → 扫码登录 → 自动读取全部可访问歌单 → 勾选 1–20 个非空歌单 → 自动建立全部基线”。已配置后可以：
 
-- “重新授权”：同一网易 UID 无损替换加密会话；不同 UID 在新账号整组歌单完整验证成功前不会影响旧实例；
+- “重新授权”：同一网易 UID 无损替换加密会话；不同 UID 在新账号整组歌单完整验证成功前不会影响当前实例；
 - “管理监控歌单”：先为全部新增项建立基线，全部成功后原子更新选择；取消监控前会列出受影响歌单并要求确认。
 - “从网易云重建基线”：确认后为当前账号全部已选非空歌单获取新快照；整组成功才原子替换旧状态、待找回和旧同步记录，读取失败不动原数据。
 
@@ -98,17 +98,16 @@ npm run verify
 npm run deploy:dry-run
 ```
 
-生产部署程序会先构建，再按 `DB` binding 应用全部 D1 migration，最后发布 Worker。migration、Secret 查询或完整性检查失败时都会停止发布。现有数据库升级前应先导出备份，详细步骤见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
+生产部署程序会先构建，再按 `DB` binding 应用全部 D1 migration，最后发布 Worker。migration、Secret 查询或完整性检查失败时都会停止发布。业务数据以网易云为准，开发升级不要求历史数据留档；必要时重建当前基线，详细步骤见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
 
 ## 文档
 
-- [完整部署、Access、备份、恢复与卸载](./DEPLOYMENT.md)
+- [完整部署、Access、恢复与卸载](./DEPLOYMENT.md)
 - [通用 Agent 辅助部署入口](./DEPLOY_WITH_AGENT.md)
 - [项目结构与开发指南](./PROJECT_GUIDE.md)
 - [安全、隐私与漏洞报告](./SECURITY.md)
 - [网易登录与歌单绑定设计](./NETEASE_LOGIN_AND_PLAYLIST_BINDING.md)
 - [多歌单监控的数据、同步与页面规则](./MULTI_PLAYLIST_MONITORING.md)
-- [歌曲状态工作流](./MANAGED_SONGS_WORKFLOW.md)
 - [Workers Observability 与日志说明](./WORKERS_OBSERVABILITY.md)
 - [未来开发方向](./FUTURE_DEVELOPMENT_DIRECTIONS.md)
 

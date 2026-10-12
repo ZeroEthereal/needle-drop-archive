@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
 import { TestD1, setupPlaylists } from "./helpers/d1.mjs";
 import { planSnapshotSync } from "../lib/sync/state-machine.ts";
-import { commitSyncPlan } from "../lib/sync/repository.ts";
-import { commitPlaylistSyncPlan, completeSongEverywhere, listPlaylistSongs, loadPlaylistSyncState } from "../lib/sync/multi-repository.ts";
+import { commitPlaylistSyncPlan, completeSongEverywhere, listPlaylistSongs, loadPlaylistSyncState } from "../lib/sync/repository.ts";
 
 const song = (id, extra = {}) => ({ id, title: `Song ${id}`, artists: ["Singer"], album: null,
   coverUrl: null, accountPlayable: true, ...extra });
@@ -89,17 +87,6 @@ test("filtering and pagination preserve relative playlist order", async (t) => {
   assert.deepEqual(await ids(db, "A", { query: "Singer", limit: 2, offset: 2 }), ["8", "2"]);
 });
 
-test("unknown historical missing positions stay at the end until the songs reappear", async (t) => {
-  const db = new TestD1(); t.after(() => db.close()); setupPlaylists(db);
-  await sync(db, "A", tracks(["1", "9", "2"]), 1);
-  db.sqlite.exec("UPDATE playlist_song_states SET playlist_position = NULL");
-  await sync(db, "A", tracks(["2"]), 2);
-  assert.deepEqual(await ids(db), ["2", "9", "1"]);
-  assert.deepEqual(positions(db), { "1": null, "9": null, "2": 0 });
-  await sync(db, "A", tracks(["9", "2", "1"]), 3);
-  assert.deepEqual(await ids(db), ["9", "2", "1"]);
-});
-
 test("empty playlists preserve missing slots and completion releases them without blank rows", async (t) => {
   const db = new TestD1(); t.after(() => db.close()); setupPlaylists(db);
   await sync(db, "A", tracks(["A", "B", "C"]), 1);
@@ -129,19 +116,11 @@ test("stale bindings and transactional failures do not commit reordered position
   assert.deepEqual(await ids(db), ["1", "2"]);
 });
 
-test("the compatibility sync entry writes playlist positions", async (t) => {
+test("current schema preserves relations and rejects invalid positions", (t) => {
   const db = new TestD1(); t.after(() => db.close()); setupPlaylists(db);
-  const plan = planSnapshotSync(snapshot(tracks(["9", "1", "3"]), 1), await loadPlaylistSyncState(db, "A"), true);
-  await commitSyncPlan(db, plan, { runId: "compat", trigger: "manual", startedAt: plan.observedAt, bindingVersion: 1 });
-  assert.deepEqual(await ids(db), ["9", "1", "3"]);
-});
-
-test("position migration preserves existing relations and rejects invalid positions", (t) => {
-  const db = new TestD1({ through: "0010" }); t.after(() => db.close()); setupPlaylists(db);
   db.sqlite.exec(`INSERT INTO songs (id,title,artists,netease_url) VALUES ('1','Original','[]','url');
     INSERT INTO playlist_song_states (playlist_id,song_id,first_seen_at,last_seen_at,last_confirmed_at)
     VALUES ('A','1','2026-10-01','2026-10-01','2026-10-01')`);
-  db.sqlite.exec(readFileSync(new URL("../drizzle/0011_playlist_song_position.sql", import.meta.url), "utf8"));
   assert.deepEqual(positions(db), { "1": null });
   assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM songs").get().n, 1);
   assert.throws(() => db.sqlite.exec("UPDATE playlist_song_states SET playlist_position = -1"), /CHECK/);

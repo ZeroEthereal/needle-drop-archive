@@ -1,4 +1,4 @@
-import type { D1DatabasePort } from "./repository";
+import type { D1DatabasePort } from "./db";
 import type { SongMetadata, SongUpsert } from "./state-machine";
 import { normalizeSongTextList, validSongDuration } from "../song-display.ts";
 

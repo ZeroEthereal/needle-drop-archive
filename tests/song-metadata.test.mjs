@@ -60,12 +60,12 @@ test("multiple staged baselines share the first identity and retain preceding mi
   const input = (title, playable = true) => ({ complete: true, observedAt: "2026-10-01T00:00:00Z",
     declaredTrackCount: 1, songs: [{ id: "123", title, artists: ["Singer"], album: null,
       coverUrl: null, accountPlayable: playable }] });
-  const first = planSnapshotSync(input("Original"), { managedSongs: [] }, false);
+  const first = planSnapshotSync(input("Original"), { playlistSongs: [] }, false);
   const originals = stagedSongMetadata([], [encodeSongUpserts(first.songUpserts)]);
-  const wrong = planSnapshotSync(input("Wrong"), { managedSongs: [], songs: originals }, false);
-  assert.equal(wrong.managedSongUpserts[0].anomalyType, "mismatch");
+  const wrong = planSnapshotSync(input("Wrong"), { playlistSongs: [], songs: originals }, false);
+  assert.equal(wrong.playlistSongUpserts[0].anomalyType, "mismatch");
   const shared = stagedSongMetadata([], [encodeSongUpserts(first.songUpserts), encodeSongUpserts(wrong.songUpserts)]);
-  const grey = planSnapshotSync(input("Do not record", false), { managedSongs: [], songs: shared }, false);
+  const grey = planSnapshotSync(input("Do not record", false), { playlistSongs: [], songs: shared }, false);
   assert.equal(grey.songUpserts[0].title, "Original"); assert.equal(grey.songUpserts[0].observedTitle, "Wrong");
-  assert.equal(grey.managedSongUpserts[0].anomalyType, "grey");
+  assert.equal(grey.playlistSongUpserts[0].anomalyType, "grey");
 });

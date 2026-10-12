@@ -85,8 +85,6 @@ export type SyncState =
   | "running"
   | "success"
   | "failed"
-  | "reauth_required"
-  | "unconfigured"
   | "unknown";
 
 export interface SyncStatus {

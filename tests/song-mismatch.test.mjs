@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
 import { TestD1, setupPlaylists } from "./helpers/d1.mjs";
 import { planSnapshotSync } from "../lib/sync/state-machine.ts";
 import { encodeSongUpserts, propagateSourceSql } from "../lib/sync/song-storage.ts";
 import { commitPlaylistSyncPlan, completeSongEverywhere, listMultiRecovery,
-  listMonitoredPlaylists, listPlaylistSongs, loadPlaylistSyncState } from "../lib/sync/multi-repository.ts";
+  listMonitoredPlaylists, listPlaylistSongs, loadPlaylistSyncState } from "../lib/sync/repository.ts";
 
 const song = (changes = {}) => ({ id: "123", title: "Original", artists: ["Artist A", "Artist B"],
   album: "Album", coverUrl: "https://example.com/original.jpg", accountPlayable: true, ...changes });
@@ -185,12 +184,11 @@ test("stale binding and transactional failures cannot leave partial metadata or 
   assert.equal(stored(db).observed_title, null); assert.equal(status(db).bucket, "normal");
 });
 
-test("migration preserves pre-existing records and permits mismatch with the same foreign-key cleanup", async (t) => {
-  const db = new TestD1({ through: "0008" }); t.after(() => db.close()); setupPlaylists(db);
+test("current schema permits mismatch and cleans playlist references", async (t) => {
+  const db = new TestD1(); t.after(() => db.close()); setupPlaylists(db);
   db.sqlite.exec(`INSERT INTO songs (id,title,artists,netease_url) VALUES ('123','Old title','["Old artist"]','url');
     INSERT INTO playlist_song_states (playlist_id,song_id,first_seen_at,last_seen_at,last_confirmed_at)
     VALUES ('A','123','old','old','old')`);
-  db.sqlite.exec(readFileSync(new URL("../drizzle/0009_song_mismatch.sql", import.meta.url), "utf8"));
   assert.equal(stored(db).title, "Old title"); assert.equal(stored(db).observed_title, null);
   db.sqlite.exec("UPDATE playlist_song_states SET bucket='anomaly',anomaly_type='mismatch',confirmed_at='now'");
   db.sqlite.exec("DELETE FROM monitored_playlists WHERE id='A'");

@@ -1,14 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
 export class TestD1 {
-  constructor({ through = "0011" } = {}) {
+  constructor() {
     this.sqlite = new DatabaseSync(":memory:");
     this.sqlite.exec("PRAGMA foreign_keys = ON");
     const directory = new URL("../../drizzle/", import.meta.url);
-    for (const file of readdirSync(directory).filter((file) => file.endsWith(".sql")).sort()) {
-      if (file.slice(0, 4) <= through) this.sqlite.exec(readFileSync(new URL(file, directory), "utf8"));
-    }
+    this.sqlite.exec(readFileSync(new URL("0000_current_schema.sql", directory), "utf8"));
   }
   prepare(sql) {
     const statement = this.sqlite.prepare(sql);
@@ -33,7 +31,7 @@ export class TestD1 {
 }
 
 export function setupPlaylists(db, ids = ["A", "B"]) {
-  db.sqlite.exec("UPDATE instance_config SET status = 'ready', account_uid = '42', binding_version = 1, playlist_id = 'A'");
+  db.sqlite.exec("UPDATE instance_config SET status = 'ready', account_uid = '42', binding_version = 1");
   const insert = db.sqlite.prepare(`INSERT INTO monitored_playlists
     (id, name, owner_uid, owner_name, list_order, baseline_established, bound_at)
     VALUES (?, ?, '42', 'Owner', ?, 1, '2026-10-01')`);

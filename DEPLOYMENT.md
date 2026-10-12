@@ -59,7 +59,7 @@ npx wrangler whoami
 
 重复执行会复用现有私有配置和 D1，不会创建重复实例。
 
-### 3. 验证、备份并部署锁定实例
+### 3. 验证并部署锁定实例
 
 最省事的正式入口是：
 
@@ -67,7 +67,7 @@ npx wrangler whoami
 .\scripts\setup-cloudflare.ps1 -SkipInstall
 ```
 
-若 D1 已存在，脚本会先把 SQL 导出到 Windows 桌面的 `needle-drop-archive-backups`，再执行验证和部署。
+若 D1 已存在，脚本会核对并复用资源，再执行验证和部署。业务数据以网易云为准，开发升级不要求导出或历史留档。
 脚本会在复用同名 D1 前要求确认；自动化环境只有在用户已经核对资源后，才可显式传入 `-ReuseExisting -NonInteractive`。
 
 也可以逐步执行：
@@ -173,9 +173,9 @@ npm run dev
 
 本地仅在 loopback 地址和 `ALLOW_LOCAL_DEV=true` 时跳过 Access。不要把生产密钥复制到本地。
 
-## 更新、备份与恢复
+## 更新与恢复
 
-- 修改生产数据库前先运行 D1 export；Wrangler 应用 migration 时还会创建服务器端备份；
+- 当前初始化直接建立新版结构。必要时保留账号、监控选择、正式会话和 Secret，重建歌曲基线与业务记录；
 - `npm run deploy` 要求已有生产构建；需要从头构建可用 `npm run deploy:full`；
 - `npm run deploy:dry-run` 只验证发布物，不修改线上资源；
 - Secret 只在全新未配置实例自动生成一次；
@@ -186,7 +186,7 @@ npm run dev
 
 删除本地目录不会影响线上。真正卸载需要在用户自己的 Cloudflare 账户中删除 Worker、D1、Workflow 和 Access 应用。
 
-删除 D1 会永久删除歌曲基线和历史。执行前必须导出备份，并核对资源名称和 ID；本项目不会提供“一键删除全部资源”的脚本。
+删除 D1 会永久删除歌曲基线和历史。执行前必须核对资源名称和 ID；本项目不会提供“一键删除全部资源”的脚本。
 
 ## 常见失败
 

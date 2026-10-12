@@ -2,7 +2,6 @@ import { Hono } from "hono";
 import { NeteaseClient, NeteaseError } from "../lib/netease";
 import {
   getSetting,
-  getSyncOverview,
   putSetting,
 } from "../lib/sync";
 import { AccessDeniedError, assertSameOriginMutation, requireAccessIdentity } from "./access";
@@ -18,17 +17,16 @@ import {
   sessionForPlaylistRequest,
   type AuthFlowMode,
 } from "./auth-flows";
-import { ensureInstanceConfig, getInstanceConfig, playlistPublicMetadata } from "./instance-config";
+import { getInstanceConfig, playlistPublicMetadata } from "./instance-config";
 import {
   completeSongEverywhere, defaultPlaylist, listMonitoredPlaylists,
   listMultiRecovery, listPlaylistSongs,
-} from "../lib/sync/multi-repository";
+} from "../lib/sync/repository";
 import { createSyncBatch, latestBatchStatus, latestCompletedBatch } from "./sync-batches";
 import { listSyncHistory } from "./sync-history";
 import type { PlaylistSelection } from "./playlist-set-binding";
 
 const QR_CREATE_COOLDOWN_MS = 5_000;
-const MANUAL_SYNC_PENDING_MS = 15 * 60 * 1_000;
 
 interface ApiVariables {
   accessEmail: string;
@@ -36,17 +34,6 @@ interface ApiVariables {
 
 interface QrRateLimit {
   createdAt: string;
-}
-
-interface ManualSyncQueue {
-  id: string;
-  requestedAt: string;
-}
-
-interface LatestSyncRun {
-  status: "running" | "success" | "failed" | "reauth_required";
-  started_at: string;
-  completed_at: string | null;
 }
 
 class ApiError extends Error {
@@ -137,32 +124,6 @@ function nextShanghaiRun(now = new Date()): string {
     nextRun = new Date(Date.UTC(year, month, day + 1, -5, 17));
   }
   return nextRun.toISOString();
-}
-
-async function safeSetting<T>(env: Env, key: string): Promise<T | null> {
-  try {
-    return await getSetting<T>(env.DB, key);
-  } catch {
-    return null;
-  }
-}
-
-async function latestSyncRun(env: Env): Promise<LatestSyncRun | null> {
-  return env.DB.prepare(`
-    SELECT status, started_at, completed_at
-    FROM sync_runs
-    ORDER BY started_at DESC, id DESC
-    LIMIT 1
-  `).first<LatestSyncRun>();
-}
-
-function queueIsPending(queue: ManualSyncQueue | null, latest: LatestSyncRun | null, now = Date.now()): boolean {
-  if (!queue) return false;
-  const requestedAt = Date.parse(queue.requestedAt);
-  if (!Number.isFinite(requestedAt) || now - requestedAt > MANUAL_SYNC_PENDING_MS) return false;
-  if (!latest) return true;
-  const latestStartedAt = Date.parse(latest.started_at);
-  return !Number.isFinite(latestStartedAt) || latestStartedAt < requestedAt;
 }
 
 function publicSessionState(state: Awaited<ReturnType<typeof getNeteaseSessionHealth>>["state"]):
@@ -267,12 +228,9 @@ app.get("/api/sync/history", async (context) => {
 });
 
 app.get("/api/sync/status", async (context) => {
-  const [overview, session, config, latest, queue, pending, playlists, batch, recoveryCounts, playlistTasks, completedBatch, lastBatchSuccess] = await Promise.all([
-    getSyncOverview(context.env.DB),
+  const [session, config, pending, playlists, batch, recoveryCounts, playlistTasks, completedBatch, lastBatchSuccess] = await Promise.all([
     getNeteaseSessionHealth(context.env),
-    ensureInstanceConfig(context.env),
-    latestSyncRun(context.env),
-    safeSetting<ManualSyncQueue>(context.env, "manual_sync_queue"),
+    getInstanceConfig(context.env),
     context.env.DB.prepare(`
       SELECT id, status, error_code, error_message, workflow_id, created_at, updated_at
       FROM pending_playlist_sets ORDER BY created_at DESC LIMIT 1
@@ -305,27 +263,25 @@ app.get("/api/sync/status", async (context) => {
       .first<{ completed_at: string | null }>(),
   ]);
 
-  const queued = batch?.batch.status === "queued" || queueIsPending(queue, latest);
+  const queued = batch?.batch.status === "queued";
   const sessionStatus = publicSessionState(session.state);
   const selected = defaultPlaylist(playlists);
   const batchState = batch?.batch.status as "queued" | "running" | "success" | "failed" | undefined;
 
   return context.json({
-    ...overview,
     totalSongCount: selected?.totalSongCount ?? 0,
     normalCount: selected?.normalCount ?? 0,
     greyCount: selected?.greyCount ?? 0,
     missingCount: selected?.missingCount ?? 0,
     mismatchCount: selected?.mismatchCount ?? 0,
-    state: queued ? "queued" : batchState ?? (config.bindingVersion <= 1 ? overview.state : "idle"),
+    state: queued ? "queued" : batchState ?? "idle",
     phase: queued ? "queued" : batchState === "running"
       ? String(batch?.tasks.find((task) => task.playlist_id === batch.batch.current_playlist_id)?.phase ?? "validate_session")
-      : overview.phase,
+      : batchState === "success" ? "complete" : null,
     nextRunAt: nextShanghaiRun(),
     progress: batch ? (Number(batch.batch.success_count) + Number(batch.batch.failure_count)) /
       Math.max(1, Number(batch.batch.playlist_count)) : undefined,
-    lastSuccessAt: lastBatchSuccess?.completed_at ??
-      (config.bindingVersion <= 1 ? overview.lastSuccessAt : null),
+    lastSuccessAt: lastBatchSuccess?.completed_at ?? null,
     error: batchState === "failed"
       ? String(batch?.tasks.find((task) => task.status === "failed")?.error_message ??
         batch?.batch.error_message ?? "部分歌单没有完成同步。")
@@ -385,7 +341,7 @@ app.get("/api/sync/status", async (context) => {
 });
 
 app.post("/api/sync", async (context) => {
-  const config = await ensureInstanceConfig(context.env);
+  const config = await getInstanceConfig(context.env);
   if (config.status !== "ready" || !config.accountUid) {
     throw new ApiError(409, "INSTANCE_NOT_CONFIGURED", "请先连接网易云并选择要监控的歌单。");
   }
@@ -406,7 +362,7 @@ app.post("/api/sync", async (context) => {
 
 app.post("/api/netease/auth-flows", async (context) => {
   const rateKey = `qr_rate:${context.get("accessEmail")}`;
-  const previous = await safeSetting<QrRateLimit>(context.env, rateKey);
+  const previous = await getSetting<QrRateLimit>(context.env.DB, rateKey);
   const previousAt = previous ? Date.parse(previous.createdAt) : Number.NaN;
   if (Number.isFinite(previousAt) && Date.now() - previousAt < QR_CREATE_COOLDOWN_MS) {
     throw new ApiError(429, "QR_RATE_LIMITED", "二维码创建得太快，请几秒后再试。");
@@ -488,7 +444,7 @@ app.post("/api/playlist-binding", async (context) => {
     throw new ApiError(400, "DUPLICATE_PLAYLIST", "不能重复选择同一个歌单。");
   const stored = await sessionForPlaylistRequest(context.env, flowId);
   if (!stored) throw new ApiError(401, "NETEASE_SESSION_REQUIRED", "网易云登录流程已失效，请重新扫码。");
-  const config = await ensureInstanceConfig(context.env);
+  const config = await getInstanceConfig(context.env);
   const existing = await context.env.DB.prepare(`
     SELECT id FROM pending_playlist_sets WHERE status IN ('preparing', 'running') LIMIT 1
   `).first<{ id: string }>();

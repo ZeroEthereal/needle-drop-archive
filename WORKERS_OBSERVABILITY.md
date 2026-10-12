@@ -8,7 +8,7 @@
 
 公开部署模板 `wrangler.jsonc` 默认启用 Workers Observability，并将 `head_sampling_rate` 设为 `1`。每次全新部署都会以 100% 采样保存 Worker 调用日志，包括请求和响应元数据、执行结果、资源耗时、未捕获异常，以及 Worker 主动输出的结构化 `console` 日志。
 
-本功能用于诊断，不改变页面、API、D1、Workflow、Cron、Access 或网易云同步行为，也不会修复浏览器网络中断。日志只覆盖到达 Worker 的请求，不补录启用前的历史，不引入旧版私有配置迁移逻辑。
+本功能用于诊断，不改变页面、API、D1、Workflow、Cron、Access 或网易云同步行为，也不会修复浏览器网络中断。日志只覆盖到达 Worker 的请求，不补录启用前的历史。
 
 ## 三种部署方式
 

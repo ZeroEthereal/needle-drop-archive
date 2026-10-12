@@ -66,13 +66,6 @@ function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function unwrap(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  if (value.data !== undefined) return value.data;
-  if (value.result !== undefined && isRecord(value.result)) return value.result;
-  return value;
-}
-
 function firstString(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) return value.trim();
@@ -90,88 +83,30 @@ function firstNumber(...values: unknown[]): number | undefined {
 }
 
 function normalizeArtists(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value
-      .map((artist) => {
-        if (typeof artist === "string") return artist;
-        if (isRecord(artist)) return firstString(artist.name, artist.artistName);
-        return undefined;
-      })
-      .filter((artist): artist is string => Boolean(artist));
-  }
-  if (typeof value === "string") {
-    return value
-      .split(/[、,/]/)
-      .map((artist) => artist.trim())
-      .filter(Boolean);
-  }
-  return [];
+  return Array.isArray(value) ? value.filter((artist): artist is string => typeof artist === "string") : [];
 }
 
 function normalizeSong(value: unknown, forcedState?: SongState): SongRecord | null {
   if (!isRecord(value)) return null;
-  const id = firstString(value.id, value.songId, value.trackId);
+  const id = firstString(value.id);
   if (!id) return null;
-
-  const albumValue = value.album ?? value.al;
-  const albumRecord = isRecord(albumValue) ? albumValue : undefined;
-  const rawState = firstString(value.state, value.status)?.toLowerCase();
-  let state: SongState = forcedState ?? "unknown";
-  if (!forcedState) {
-    if (value.grey === true || rawState === "grey" || rawState === "gray") state = "grey";
-    else if (rawState === "mismatch") state = "mismatch";
-    else if (rawState === "missing" || rawState === "disappeared") state = "missing";
-    else if (value.playable === true || rawState === "playable" || rawState === "normal") {
-      state = "playable";
-    }
-  }
-
-  const rawSource = firstString(value.source, value.origin)?.toLowerCase();
-  const source =
-    value.cloud === true || rawSource === "cloud"
-      ? "cloud"
-      : rawSource === "catalog" || rawSource === "official"
-        ? "catalog"
-        : "unknown";
-
-  return {
-    id,
-    title: [value.title, value.name, value.songName].find((entry) => typeof entry === "string" && entry.length > 0) as string ?? "未命名歌曲",
-    artists: normalizeArtists(value.artists ?? value.artist ?? value.ar),
-    aliases: normalizeSongTextList(value.aliases),
-    translations: normalizeSongTextList(value.translations),
-    durationMs: validSongDuration(value.durationMs),
-    album:
-      firstString(
-        typeof albumValue === "string" ? albumValue : undefined,
-        albumRecord?.name,
-        value.albumName,
-      ) ?? "未知专辑",
-    coverUrl: firstString(
-      value.coverUrl,
-      value.cover,
-      value.picUrl,
-      albumRecord?.picUrl,
-    ),
-    neteaseUrl:
-      firstString(value.neteaseUrl, value.url, value.songUrl) ??
-      `https://music.163.com/#/song?id=${encodeURIComponent(id)}`,
-    firstSeenAt: firstString(value.firstSeenAt, value.createdAt),
-    lastSeenAt: firstString(value.lastSeenAt, value.updatedAt),
-    lastConfirmedAt: firstString(value.lastConfirmedAt),
-    state,
-    source,
-  };
+  const rawState = firstString(value.state);
+  const state: SongState = forcedState ?? (["playable", "grey", "missing", "mismatch"].includes(rawState ?? "")
+    ? rawState as SongState : "unknown");
+  return { id, title: typeof value.title === "string" ? value.title : "未命名歌曲",
+    artists: normalizeArtists(value.artists), aliases: normalizeSongTextList(value.aliases),
+    translations: normalizeSongTextList(value.translations), durationMs: validSongDuration(value.durationMs),
+    album: firstString(value.album) ?? "未知专辑", coverUrl: firstString(value.coverUrl),
+    neteaseUrl: firstString(value.neteaseUrl) ?? `https://music.163.com/#/song?id=${encodeURIComponent(id)}`,
+    firstSeenAt: firstString(value.firstSeenAt), lastSeenAt: firstString(value.lastSeenAt),
+    lastConfirmedAt: firstString(value.lastConfirmedAt), state, source: "unknown" };
 }
 
 function normalizeRecovery(value: unknown): RecoveryItem | null {
   if (!isRecord(value)) return null;
-  const rawKind = firstString(value.type, value.kind, value.status)?.toLowerCase();
-  const kind: RecoveryKind =
-    rawKind === "grey" || rawKind === "gray" || rawKind === "unavailable"
-      ? "grey"
-      : rawKind === "mismatch" ? "mismatch" : "missing";
-  const song = normalizeSong(value.song ?? value.track ?? value, kind);
+  const kind = firstString(value.type);
+  if (kind !== "grey" && kind !== "missing" && kind !== "mismatch") return null;
+  const song = normalizeSong({ ...value, id: value.songId }, kind);
   if (!song) return null;
   return {
     kind,
@@ -179,7 +114,7 @@ function normalizeRecovery(value: unknown): RecoveryItem | null {
     observedTitle: typeof value.observedTitle === "string" ? value.observedTitle : undefined,
     observedArtists: Array.isArray(value.observedArtists) ? normalizeArtists(value.observedArtists) : undefined,
     lastNormalAt: firstString(value.lastNormalAt),
-    confirmedAt: firstString(value.confirmedAt, value.detectedAt, value.createdAt),
+    confirmedAt: firstString(value.confirmedAt),
     contexts: Array.isArray(value.contexts) ? value.contexts.flatMap((context) => {
       if (!isRecord(context)) return [];
       const playlistId = firstString(context.playlistId);
@@ -193,14 +128,14 @@ function normalizeRecovery(value: unknown): RecoveryItem | null {
 
 function normalizeTask(value: unknown): PlaylistTask | undefined {
   if (!isRecord(value)) return undefined;
-  const playlistId = firstString(value.playlist_id, value.playlistId);
+  const playlistId = firstString(value.playlist_id);
   if (!playlistId) return undefined;
   return {
-    playlistId, playlistName: firstString(value.playlist_name, value.playlistName) ?? "歌单",
+    playlistId, playlistName: firstString(value.playlist_name) ?? "歌单",
     status: (firstString(value.status) ?? "unexecuted") as PlaylistTask["status"],
-    phase: firstString(value.phase), error: firstString(value.error_message, value.error),
-    workflowId: firstString(value.workflow_id, value.workflowId),
-    completedAt: firstString(value.completed_at, value.completedAt),
+    phase: firstString(value.phase), error: firstString(value.error_message),
+    workflowId: firstString(value.workflow_id),
+    completedAt: firstString(value.completed_at),
   };
 }
 
@@ -224,58 +159,29 @@ function normalizeBatch(value: unknown): SyncBatchStatus | undefined {
 }
 
 function normalizePage<T>(value: unknown, mapper: (item: unknown) => T | null): CursorPage<T> {
-  const body = unwrap(value);
+  const body = value;
   const record = isRecord(body) ? body : undefined;
-  const rawItems = Array.isArray(body)
-    ? body
-    : Array.isArray(record?.items)
-      ? record.items
-      : Array.isArray(record?.tracks)
-        ? record.tracks
-        : Array.isArray(record?.songs)
-          ? record.songs
-          : [];
+  const rawItems = Array.isArray(record?.items) ? record.items : [];
   return {
     items: rawItems.map(mapper).filter((item): item is T => item !== null),
-    nextCursor: firstString(record?.nextCursor, record?.cursor),
-    total: firstNumber(record?.total, record?.count, record?.trackCount),
+    nextCursor: firstString(record?.nextCursor),
+    total: firstNumber(record?.total),
   };
 }
 
 function normalizeSessionStatus(value: unknown): SessionStatus {
-  const status = firstString(value)?.toLowerCase();
-  if (status === "valid" || status === "authenticated" || status === "ready") return "valid";
-  if (status === "anonymous" || status === "missing" || status === "logged_out") {
-    return "anonymous";
-  }
-  if (status === "expired" || status === "reauth_required") return "expired";
-  if (status === "risk_controlled" || status === "risk" || status === "blocked") {
-    return "risk_controlled";
-  }
-  return "unknown";
+  return typeof value === "string" && ["valid", "anonymous", "expired", "risk_controlled"].includes(value)
+    ? value as SessionStatus : "unknown";
 }
-
 function normalizeSyncState(value: unknown): SyncState {
-  const state = firstString(value)?.toLowerCase();
-  if (state === "idle") return "idle";
-  if (state === "queued" || state === "pending") return "queued";
-  if (state === "running" || state === "syncing") return "running";
-  if (state === "success" || state === "succeeded" || state === "completed") return "success";
-  if (state === "failed" || state === "error") return "failed";
-  if (state === "reauth_required") return "reauth_required";
-  if (state === "unconfigured" || state === "not_configured") return "unconfigured";
-  return "unknown";
+  return typeof value === "string" && ["idle", "queued", "running", "success", "failed"].includes(value)
+    ? value as SyncState : "unknown";
 }
 
 function normalizeStatus(value: unknown): SyncStatus {
-  const body = unwrap(value);
+  const body = value;
   const record = isRecord(body) ? body : {};
-  const sessionRecord = isRecord(record.session) ? record.session : undefined;
-  const profileRecord = isRecord(record.profile)
-    ? record.profile
-    : isRecord(sessionRecord?.profile)
-      ? sessionRecord.profile
-      : undefined;
+  const profileRecord = isRecord(record.profile) ? record.profile : undefined;
   const playlistRecord = isRecord(record.playlist) ? record.playlist : undefined;
   const bindingRecord = isRecord(record.binding) ? record.binding : undefined;
   const bindingError = isRecord(bindingRecord?.error) ? bindingRecord.error : undefined;
@@ -294,23 +200,23 @@ function normalizeStatus(value: unknown): SyncStatus {
       mismatchCount: firstNumber(entry.mismatchCount) ?? 0,
       task: normalizeTask(entry.task), }];
   }) : [];
-  let progress = firstNumber(record.progress, record.percent);
+  let progress = firstNumber(record.progress);
   if (progress !== undefined && progress > 1) progress /= 100;
 
   return {
-    state: normalizeSyncState(record.state ?? record.status),
-    phase: firstString(record.phase, record.step, record.currentStep),
-    lastSuccessAt: firstString(record.lastSuccessAt, record.lastSyncedAt),
-    nextRunAt: firstString(record.nextRunAt, record.nextSyncAt),
-    totalSongCount: firstNumber(record.totalSongCount, record.currentSongCount, record.trackCount),
+    state: normalizeSyncState(record.state),
+    phase: firstString(record.phase),
+    lastSuccessAt: firstString(record.lastSuccessAt),
+    nextRunAt: firstString(record.nextRunAt),
+    totalSongCount: firstNumber(record.totalSongCount),
     normalCount: firstNumber(record.normalCount),
-    missingCount: firstNumber(record.missingCount, record.disappearedCount),
-    greyCount: firstNumber(record.greyCount, record.grayCount),
+    missingCount: firstNumber(record.missingCount),
+    greyCount: firstNumber(record.greyCount),
     mismatchCount: firstNumber(record.mismatchCount),
     sessionStatus: normalizeSessionStatus(
-      record.sessionStatus ?? sessionRecord?.state ?? sessionRecord?.status,
+      record.sessionStatus,
     ),
-    error: firstString(record.error, record.lastError, record.message),
+    error: firstString(record.error),
     progress,
     recoveryTotal: firstNumber(record.recoveryTotal),
     recoveryGreyCount: firstNumber(record.recoveryGreyCount),
@@ -322,9 +228,9 @@ function normalizeStatus(value: unknown): SyncStatus {
     manualSyncDisabled: record.manualSyncDisabled === true,
     profile: profileRecord
       ? {
-          userId: firstString(profileRecord.userId, profileRecord.id),
-          nickname: firstString(profileRecord.nickname, profileRecord.name),
-          avatarUrl: firstString(profileRecord.avatarUrl, profileRecord.avatar),
+          userId: firstString(profileRecord.userId),
+          nickname: firstString(profileRecord.nickname),
+          avatarUrl: firstString(profileRecord.avatarUrl),
         }
       : undefined,
     setupState: firstString(record.setupState) as SyncStatus["setupState"],
@@ -517,18 +423,8 @@ function phaseIndex(phase?: string): number {
 }
 
 function qrState(value: unknown): QrLoginState {
-  const state = firstString(value)?.toLowerCase();
-  if (state === "800" || state === "expired") return "expired";
-  if (state === "801" || state === "waiting_scan" || state === "pending") {
-    return "waiting_scan";
-  }
-  if (state === "802" || state === "waiting_confirm" || state === "scanned") {
-    return "waiting_confirm";
-  }
-  if (state === "803" || state === "authorized" || state === "success") {
-    return "authorized";
-  }
-  return "error";
+  return typeof value === "string" && ["creating", "waiting_scan", "waiting_confirm", "authorized", "expired", "error"].includes(value)
+    ? value as QrLoginState : "error";
 }
 
 function SongCover({ song, size = "regular" }: { song: SongRecord; size?: "regular" | "large" }) {
@@ -1211,7 +1107,7 @@ function SyncView({
                 );
               })}
             </div>
-            {status.error ? <div className="sync-error"><strong>{status.state === "reauth_required" ? "需要重新授权网易云" : "同步没有完成"}</strong><p>{status.error}</p></div> : null}
+            {status.error ? <div className="sync-error"><strong>{status.sessionStatus === "expired" ? "需要重新授权网易云" : "同步没有完成"}</strong><p>{status.error}</p></div> : null}
           </section>
 
           <SyncHistory key={`${status.bindingVersion ?? ""}:${status.completedBatch?.id ?? ""}`} />
@@ -1686,7 +1582,7 @@ export function MusicVault() {
       const raw = await requestJson([
         { url: `/api/recovery/${encodeURIComponent(item.song.id)}/complete`, init: { method: "POST" } },
       ]);
-      const result = unwrap(raw);
+      const result = raw;
       const restored = isRecord(result) && result.restored === true;
       if (restored) {
         notify("歌曲已恢复正常", "info");
@@ -1758,10 +1654,10 @@ export function MusicVault() {
       const items = new Map<string, PlaylistChoice>();
       let offset = 0;
       for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
-        const raw = unwrap(await requestJson([{
+        const raw = await requestJson([{
           url: "/api/netease/playlists",
           init: { method: "POST", body: JSON.stringify({ flowId, offset, limit: 100 }) },
-        }]));
+        }]);
         const record = isRecord(raw) ? raw : {};
         const pageItems = Array.isArray(record.items) ? record.items : [];
         let addedOnThisPage = 0;
@@ -1809,11 +1705,11 @@ export function MusicVault() {
     setQrMode(mode);
     setQrLogin({ flowId: "", state: "creating" });
     try {
-      const raw = unwrap(await requestJson([
+      const raw = await requestJson([
         { url: "/api/netease/auth-flows", init: { method: "POST", body: JSON.stringify({ mode }) } },
-      ]));
+      ]);
       const record = isRecord(raw) ? raw : {};
-      const flowId = firstString(record.id, record.flowId);
+      const flowId = firstString(record.id);
       const qrImageUrl = firstString(record.qrImageUrl);
       if (!flowId || !qrImageUrl || !qrImageUrl.startsWith("/api/netease/auth-flows/")) {
         throw new Error("二维码响应不完整");
@@ -1821,7 +1717,7 @@ export function MusicVault() {
       setQrLogin({
         flowId,
         qrImage: qrImageUrl,
-        expiresAt: firstString(record.expiresAt, record.expireAt),
+        expiresAt: firstString(record.expiresAt),
         state: "waiting_scan",
       });
     } catch (error) {
@@ -1862,13 +1758,13 @@ export function MusicVault() {
       if (document.visibilityState !== "visible" || checking) return;
       checking = true;
       try {
-        const raw = unwrap(await requestJson([
+        const raw = await requestJson([
           { url: `/api/netease/auth-flows/${encodeURIComponent(qrLogin.flowId)}/poll`, init: { method: "POST", body: "{}" } },
-        ]));
+        ]);
         const record = isRecord(raw) ? raw : {};
-        const rawState = firstString(record.state, record.status);
-        const state = rawState === "same_account_authorized" ? "authorized" : qrState(rawState ?? record.code);
-        setQrLogin((current) => current ? { ...current, state, message: firstString(record.message, record.reason) } : current);
+        const rawState = firstString(record.state);
+        const state = rawState === "same_account_authorized" ? "authorized" : qrState(rawState);
+        setQrLogin((current) => current ? { ...current, state, message: firstString(record.message) } : current);
         if (state === "authorized") {
           onQrAuthorized(record.requiresPlaylistSelection === true, qrLogin.flowId);
         }

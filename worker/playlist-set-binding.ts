@@ -1,11 +1,11 @@
 import type { WorkflowStep } from "cloudflare:workers";
 import { NeteaseClient } from "../lib/netease";
 import { assertCompleteSnapshot, planSnapshotSync } from "../lib/sync/state-machine";
-import { defaultPlaylist, listMonitoredPlaylists } from "../lib/sync/multi-repository";
+import { listMonitoredPlaylists } from "../lib/sync/repository";
 import type { Env } from "./env";
 import { getInstanceConfig } from "./instance-config";
 import { loadNeteaseSession } from "./session-store";
-import { snapshotForStateMachine } from "./sync-runner";
+import { snapshotForStateMachine } from "../lib/sync/snapshot";
 import { verifySnapshotAnomalies } from "./snapshot-verifier";
 import { encodeSongUpserts, loadSongMetadata, propagateSourceSql, stagedSongMetadata, upsertSongsSql } from "../lib/sync/song-storage";
 
@@ -21,13 +21,11 @@ interface PendingSet {
 }
 
 function pendingSelection(pending: PendingSet): { playlists: PlaylistSelection[]; freshBaseline: boolean } {
-  const raw = JSON.parse(pending.playlist_json) as PlaylistSelection[] | {
-    playlists: PlaylistSelection[]; freshBaseline?: boolean;
-  };
-  const playlists = Array.isArray(raw) ? raw : raw.playlists;
+  const raw = JSON.parse(pending.playlist_json) as { playlists: PlaylistSelection[]; freshBaseline: boolean };
+  const playlists = raw.playlists;
   if (!Array.isArray(playlists) || playlists.length < 1 || playlists.length > 20)
     throw new Error("Pending playlist selection is invalid");
-  return { playlists, freshBaseline: !Array.isArray(raw) && raw.freshBaseline === true };
+  return { playlists, freshBaseline: raw.freshBaseline === true };
 }
 
 async function loadPending(env: Env, id: string): Promise<PendingSet> {
@@ -45,13 +43,7 @@ export async function preparePlaylistBaseline(env: Env, bindingId: string, playl
   const existing = await env.DB.prepare(`SELECT playlist_id, song_json, state_json FROM pending_playlist_baselines
     WHERE binding_id = ? AND playlist_id = ?`).bind(bindingId, playlistId)
     .first<{ playlist_id: string; song_json: string; state_json: string }>();
-  if (existing && (JSON.parse(existing.song_json) as Array<{ sourceState?: string; aliases?: unknown; translations?: unknown; durationMs?: unknown }>)
-    .every((song) => song.sourceState !== undefined && song.aliases !== undefined &&
-      song.translations !== undefined && song.durationMs !== undefined) &&
-    (JSON.parse(existing.state_json) as Array<{ playlistPosition?: number }>)
-      .every((state) => typeof state.playlistPosition === "number" &&
-        Number.isSafeInteger(state.playlistPosition) && state.playlistPosition >= 0))
-    return { playlistId, staged: true };
+  if (existing) return { playlistId, staged: true };
   const stored = await loadNeteaseSession(env, pending.session_id);
   if (!stored || stored.uid !== pending.account_uid) throw new Error("Pending NetEase session is unavailable");
   const client = new NeteaseClient();
@@ -69,7 +61,7 @@ export async function preparePlaylistBaseline(env: Env, bindingId: string, playl
     WHERE binding_id = ? AND playlist_id <> ? ORDER BY verified_at, playlist_id`)
     .bind(bindingId, playlistId).all<{ song_json: string }>();
   if (!prior.success) throw new Error(prior.error || "Could not read staged song originals");
-  const state = { managedSongs: [], songs: stagedSongMetadata(
+  const state = { playlistSongs: [], songs: stagedSongMetadata(
     keepOriginals ? await loadSongMetadata(env.DB) : [], (prior.results ?? []).map((row) => row.song_json)) };
   const verified = await verifySnapshotAnomalies(client, stored.session, account, state);
   const snapshot = assertCompleteSnapshot(snapshotForStateMachine(verified));
@@ -80,7 +72,7 @@ export async function preparePlaylistBaseline(env: Env, bindingId: string, playl
       song_json = excluded.song_json, state_json = excluded.state_json, verified_at = excluded.verified_at`)
     .bind(bindingId, playlistId,
       encodeSongUpserts(plan.songUpserts),
-      JSON.stringify(plan.managedSongUpserts), plan.observedAt).run();
+      JSON.stringify(plan.playlistSongUpserts), plan.observedAt).run();
   if (!result.success) throw new Error(result.error || "Could not stage playlist baseline");
   return { playlistId, staged: true, songCount: plan.result.currentSongCount };
 }
@@ -144,20 +136,17 @@ async function activateSelection(env: Env, pending: PendingSet, selections: Play
       mismatchCount: old?.mismatchCount ?? stagedStates.filter((state) => state.anomalyType === "mismatch").length,
       baselineEstablished: true, boundAt: old?.boundAt ?? new Date().toISOString() };
   });
-  const primary = defaultPlaylist(candidate);
-  if (!primary) throw new Error("Playlist selection cannot be empty");
+  if (!candidate.length) throw new Error("Playlist selection cannot be empty");
   const nextVersion = current.bindingVersion + 1;
   const now = new Date().toISOString();
   const guard = `EXISTS (SELECT 1 FROM instance_config WHERE id = 'primary'
     AND binding_version = ? AND account_uid = ?)`;
   const statements = [
     env.DB.prepare(`UPDATE instance_config SET account_uid = ?, account_nickname = ?,
-      account_avatar_url = ?, playlist_id = ?, playlist_name = ?, playlist_cover_url = ?,
-      playlist_owner_uid = ?, playlist_owner_name = ?, playlist_owned = ?,
+      account_avatar_url = ?,
       binding_version = ?, status = 'ready', bound_at = ?, updated_at = ?
       WHERE id = 'primary' AND binding_version = ?`).bind(pending.account_uid,
-      pending.account_nickname, pending.account_avatar_url, primary.id, primary.name,
-      primary.coverUrl, primary.ownerUid, primary.ownerName, primary.owned ? 1 : 0,
+      pending.account_nickname, pending.account_avatar_url,
       nextVersion, now, now, pending.base_binding_version),
   ];
   if (replacingAccount || freshBaseline) {
@@ -220,14 +209,6 @@ async function activateSelection(env: Env, pending: PendingSet, selections: Play
         last_validated_at = excluded.last_validated_at,
         last_refreshed_at = excluded.last_refreshed_at`)
       .bind(now, pending.session_id, nextVersion, pending.account_uid));
-  }
-  if (freshBaseline) {
-    statements.push(env.DB.prepare(`DELETE FROM managed_songs WHERE ${guard}`)
-      .bind(nextVersion, pending.account_uid));
-    statements.push(env.DB.prepare(`DELETE FROM sync_runs WHERE ${guard}`)
-      .bind(nextVersion, pending.account_uid));
-    statements.push(env.DB.prepare(`DELETE FROM settings WHERE key = 'manual_sync_queue'
-      AND ${guard}`).bind(nextVersion, pending.account_uid));
   }
   statements.push(env.DB.prepare(`DELETE FROM songs WHERE id NOT IN
     (SELECT song_id FROM playlist_song_states) AND ${guard}`)

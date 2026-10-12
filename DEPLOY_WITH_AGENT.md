@@ -25,7 +25,7 @@ Agent 只负责部署用户自己的 Cloudflare 实例。项目维护者不会�
 4. 真实 Cookie、SESSION_ENCRYPTION_KEY、Access Audience、团队域名、邮箱和 D1 UUID不得输出到聊天、日志或 Git。
 5. 创建或复用云端资源前先告诉我资源名称；发现同名既有资源时复用，不要创建重复实例，也不要删除任何既有资源。
 6. 需要我亲自完成 Cloudflare 登录、Access 网页设置、邮箱验证码或网易云扫码时再暂停。
-7. migration、Secret 状态或备份检查失败时停止，不得绕过安全检查。
+7. migration、Secret 状态或配置检查失败时停止，不得绕过安全检查。
 8. 最后运行项目验证，并只报告不含个人标识的结果：Worker、D1、Workflow、Cron、Secret 名称、Access 是否就绪，以及网站能否打开。
 
 现在先检查环境和 Git 状态，然后执行安全部署。
@@ -38,7 +38,7 @@ npm ci
 .\scripts\setup-cloudflare.ps1 -SkipInstall
 ```
 
-脚本会完成环境检查、D1 创建或复用、已有数据库桌面备份、全部 migration、Secret 安全初始化、构建、部署和 Access 收尾提示。发现同名 D1 时会要求用户确认复用；Agent 不得替用户猜测。已经由用户明确确认后，非交互重试才可增加 `-ReuseExisting -NonInteractive`。
+脚本会完成环境检查、D1 创建或复用、当前结构 migration、Secret 安全初始化、构建、部署和 Access 收尾提示。发现同名 D1 时会要求用户确认复用；Agent 不得替用户猜测。已经由用户明确确认后，非交互重试才可增加 `-ReuseExisting -NonInteractive`。
 
 如果 Agent 不能操作浏览器，用户按照 [DEPLOYMENT.md 的 Access 收尾](./DEPLOYMENT.md#cloudflare-access-收尾)完成网页操作，再把团队域名和 Audience 交给 Agent继续执行。不要把这些值发送到公开 Issue。
 

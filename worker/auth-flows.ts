@@ -44,7 +44,7 @@ async function cleanupExpiredFlows(env: Env): Promise<void> {
     .filter((id): id is string => Boolean(id && id !== "primary"));
   const statements = [
     env.DB.prepare(`
-      DELETE FROM pending_playlist_bindings
+      DELETE FROM pending_playlist_sets
       WHERE status = 'failed' AND auth_flow_id IN (
         SELECT id FROM netease_auth_flows WHERE expires_at <= ?
       )
@@ -52,13 +52,13 @@ async function cleanupExpiredFlows(env: Env): Promise<void> {
     env.DB.prepare(`
       DELETE FROM netease_auth_flows
       WHERE expires_at <= ? AND NOT EXISTS (
-        SELECT 1 FROM pending_playlist_bindings
-        WHERE pending_playlist_bindings.auth_flow_id = netease_auth_flows.id
+        SELECT 1 FROM pending_playlist_sets
+        WHERE pending_playlist_sets.auth_flow_id = netease_auth_flows.id
       )
     `).bind(now),
     ...sessionIds.map((id) => env.DB.prepare(`
       DELETE FROM netease_sessions WHERE id = ?
-        AND NOT EXISTS (SELECT 1 FROM pending_playlist_bindings WHERE session_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM pending_playlist_sets WHERE session_id = ?)
     `).bind(id, id)),
   ];
   const results = await env.DB.batch(statements);

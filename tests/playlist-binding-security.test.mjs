@@ -23,22 +23,21 @@ test("login challenges and cookies stay server-side and out of API URLs", async 
   assert.doesNotMatch(api, /ciphertext|nonce|MUSIC_U|cookie/i);
 });
 
-test("the binding transaction is version-guarded and clears old data only inside D1 batch", async () => {
-  const binding = await source("worker/binding-runner.ts");
+test("the binding transaction is version-guarded and replaces playlist data only inside D1 batch", async () => {
+  const binding = await source("worker/playlist-set-binding.ts");
   assert.match(binding, /base_binding_version/);
   assert.match(binding, /binding_version = \?/);
   assert.match(binding, /env\.DB\.batch\(statements\)/);
-  assert.match(binding, /DELETE FROM managed_songs/);
   assert.match(binding, /DELETE FROM songs/);
-  assert.match(binding, /DELETE FROM sync_runs/);
-  assert.match(binding, /results\[0\]\.meta\?\.changes/);
+  assert.match(binding, /DELETE FROM sync_batches/);
+  assert.match(binding, /result\[0\]\.meta\?\.changes/);
 });
 
 test("the schema separates active config, encrypted auth flows and pending bindings", async () => {
-  const migration = await source("drizzle/0005_instance_playlist_binding.sql");
+  const migration = await source("drizzle/0000_current_schema.sql");
   assert.match(migration, /CREATE TABLE `instance_config`/);
   assert.match(migration, /CREATE TABLE `netease_auth_flows`/);
-  assert.match(migration, /CREATE TABLE `pending_playlist_bindings`/);
+  assert.match(migration, /CREATE TABLE `pending_playlist_sets`/);
   assert.match(migration, /`binding_version` integer/);
-  assert.doesNotMatch(migration, /DELETE FROM (songs|managed_songs|sync_runs)/);
+  assert.doesNotMatch(migration, /DELETE FROM (songs|playlist_song_states|sync_batches)/);
 });

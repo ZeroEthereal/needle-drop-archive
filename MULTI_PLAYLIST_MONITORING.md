@@ -6,7 +6,7 @@
 
 `songs` 按网易歌曲 ID 保存共享资料。`monitored_playlists` 保存歌单资料、网易列表顺序及独立的 `baseline_established` 标志。`playlist_song_states` 用 `(playlist_id, song_id)` 联合主键保存每首歌在每个歌单中的正常、变灰或消失状态；不会按照勾选数量动态建表。取消监控会级联删除该歌单状态，未被其他歌单引用的歌曲资料才会清除。
 
-旧单歌单 `managed_songs`、`sync_runs` 和绑定表在迁移 `0008_multi_playlist_monitoring.sql` 期间保留，避免迁移先于 Worker 发布时使旧版本立即失效。新接口只使用多歌单表。同步批次和逐歌单任务分别存在 `sync_batches`、`sync_playlist_tasks`，已结束的批次保留最近 30 天；调整监控集合时，旧集合的批次结果会清理，避免呈现为新集合的结果。
+初始化直接建立当前多歌单结构，运行代码只访问当前业务表。同步批次与逐歌单任务分别存于 `sync_batches`、`sync_playlist_tasks`；结束的批次按当前保留周期清理，调整监控集合时清除原集合结果。
 
 ## 同步流程
 
@@ -28,4 +28,4 @@ Cron 保持 `17 19 * * *`，即北京时间每日 03:17。它与“同步状态�
 
 ## 运维
 
-线上升级先导出远程 D1，备份放在 Windows 桌面，再运行项目正式迁移与完整发布流程。发布物仍是 Worker、Static Assets、两个 Workflow 和原 Cron；无需服务器端另装 npm 依赖。在线检查时，分别查看单歌单手动同步、全量同步、逐歌单任务结果和待找回聚合。`package.json` 与锁文件不需要改变。
+线上更新运行当前初始化/迁移与正式发布流程，不创建业务数据备份。需要重建时保留账号、登录与监控选择，由完整同步建立新基线。发布物仍是 Worker、Static Assets、两个 Workflow 和原 Cron；无需服务器端另装 npm 依赖。在线检查时，分别查看指定歌单手动同步、全量同步、逐歌单任务结果和待找回聚合。`package.json` 与锁文件不需要改变。

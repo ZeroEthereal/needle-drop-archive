@@ -22,8 +22,6 @@ export interface Env {
   DB: D1Database;
   IMAGES?: ImageBinding;
   MUSIC_SYNC?: WorkflowBinding<
-    | { action?: "sync"; source: "manual" | "scheduled" }
-    | { action: "bind_playlist"; bindingId: string }
     | { action: "sync_playlist"; batchId: string; playlistId: string }
     | { action: "prepare_playlist_baseline"; bindingId: string; playlistId: string }
   >;
@@ -39,8 +37,6 @@ export interface Env {
 
   SESSION_ENCRYPTION_KEY?: string;
 
-  NETEASE_PLAYLIST_ID?: string;
-  NETEASE_EXPECTED_UID?: string;
 }
 
 export interface AppExecutionContext {

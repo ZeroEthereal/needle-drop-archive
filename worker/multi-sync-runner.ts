@@ -1,11 +1,11 @@
 import { NeteaseClient, NeteaseError } from "../lib/netease";
 import { planSnapshotSync } from "../lib/sync/state-machine";
-import { commitPlaylistSyncPlan, loadPlaylistSyncState } from "../lib/sync/multi-repository";
+import { commitPlaylistSyncPlan, loadPlaylistSyncState } from "../lib/sync/repository";
 import type { Env } from "./env";
 import { getInstanceConfig } from "./instance-config";
 import { loadNeteaseSession, markNeteaseSessionStatus, storeNeteaseSessionIfBindingCurrent } from "./session-store";
 import { verifySnapshotAnomalies } from "./snapshot-verifier";
-import { snapshotForStateMachine } from "./sync-runner";
+import { snapshotForStateMachine } from "../lib/sync/snapshot";
 
 const ACCOUNT_ERRORS = new Set(["authentication", "anonymous", "session_expired", "uid_mismatch", "risk_control"]);
 
@@ -21,7 +21,7 @@ export async function runMonitoredPlaylistSync(env: Env, batchId: string, playli
     throw new Error("Playlist binding changed during sync");
   const playlist = await env.DB.prepare(`SELECT id, baseline_established FROM monitored_playlists WHERE id = ?`)
     .bind(playlistId).first<{ id: string; baseline_established: number }>();
-  if (!playlist || playlist.baseline_established !== 1) throw new Error("Playlist baseline is unavailable");
+  if (!playlist) throw new Error("Playlist baseline is unavailable");
   const phase = async (value: string) => {
     await env.DB.prepare(`UPDATE sync_playlist_tasks SET phase = ?, updated_at = CURRENT_TIMESTAMP
       WHERE batch_id = ? AND playlist_id = ? AND status = 'running'`)
@@ -55,7 +55,7 @@ export async function runMonitoredPlaylistSync(env: Env, batchId: string, playli
     });
     await phase("compare_snapshot");
     const verified = await verifySnapshotAnomalies(client, stored.session, account, state);
-    const plan = planSnapshotSync(snapshotForStateMachine(verified), state, true);
+    const plan = planSnapshotSync(snapshotForStateMachine(verified), state, playlist.baseline_established === 1);
     await phase("persist_snapshot");
     await commitPlaylistSyncPlan(env.DB, playlistId, plan, batchId, task.binding_version);
     return { playlistId, ...plan.result };
