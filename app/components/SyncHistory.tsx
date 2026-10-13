@@ -108,14 +108,14 @@ export default function SyncHistory() {
               ? `${record.completedAt.replace(" ", "T")}Z` : record.completedAt}>{historyTime(record.completedAt)}</time>
             <span className="history-trigger">{record.trigger === "scheduled" ? "自动同步" : "手动同步"}</span>
             <p className="history-summary">
-              {record.scope === "playlist" ? `${record.playlist?.name ?? "歌单"}同步` : "全部监控歌单同步"}
+              {record.scope !== "all" ? `${record.playlist?.name ?? "监控项"}同步` : "全部监控项同步"}
               <span className="history-result">{record.status === "success" ? "成功" : "失败"}</span>
               {record.scope === "all" && record.status === "failed"
-                ? <span className="history-failure-count">（{record.failureCount} 个歌单失败）</span> : null}
+                ? <span className="history-failure-count">（{record.failureCount} 个监控项失败）</span> : null}
             </p>
           </div>
           {record.scope === "all" && record.failedPlaylists.length > 0 ? <div className="history-failures">
-            <span>失败歌单</span>
+            <span>失败监控项</span>
             <ul>{record.failedPlaylists.map((playlist) => <li key={playlist.id}>{playlist.name}</li>)}</ul>
           </div> : null}
         </li>)}

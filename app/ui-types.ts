@@ -1,4 +1,4 @@
-export type ViewId = "recovery" | "likes" | "sync";
+export type ViewId = "recovery" | "likes" | "sync" | "cloud";
 
 export type MotionMode = "immersive" | "balanced" | "static";
 
@@ -44,6 +44,8 @@ export interface PlaylistTask {
 }
 
 export interface MonitoredPlaylistStatus {
+  sourceKind?: "playlist" | "cloud";
+  baselineEstablished?: boolean;
   id: string; name: string; coverUrl?: string; ownerUid?: string;
   ownerName?: string; owned: boolean; specialType?: number;
   listOrder: number; boundAt?: string; totalSongCount: number;
@@ -53,7 +55,7 @@ export interface MonitoredPlaylistStatus {
 
 export interface SyncBatchStatus {
   id: string; trigger: "manual" | "scheduled";
-  scope: "all" | "playlist";
+  scope: "all" | "playlist" | "cloud";
   status: "queued" | "running" | "success" | "failed";
   playlistCount: number; successCount: number; failureCount: number;
   unexecutedCount: number; currentPlaylistId?: string;
@@ -63,7 +65,7 @@ export interface SyncBatchStatus {
 export interface SyncHistoryRecord {
   id: string;
   trigger: "manual" | "scheduled";
-  scope: "all" | "playlist";
+  scope: "all" | "playlist" | "cloud";
   completedAt: string;
   status: "success" | "failed";
   playlistCount: number;
@@ -105,6 +107,7 @@ export interface SyncStatus {
   recoveryMissingCount?: number;
   recoveryMismatchCount?: number;
   playlists?: MonitoredPlaylistStatus[];
+  cloud?: MonitoredPlaylistStatus;
   batch?: SyncBatchStatus;
   completedBatch?: SyncBatchStatus;
   manualSyncDisabled?: boolean;

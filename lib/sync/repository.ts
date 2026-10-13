@@ -1,8 +1,10 @@
 import type { D1DatabasePort } from "./db";
+import { CLOUD_SOURCE_ID, type MonitoringSourceKind } from "../monitoring-source.ts";
 import type { PlaylistSongState, SongDisplayMetadata, SyncPlan, SyncState } from "./state-machine";
 import { encodeSongUpserts, loadSongMetadata, propagateSourceSql, readSongDisplayMetadata, upsertSongsSql, type SongDisplayDbRow } from "./song-storage.ts";
 
 export interface MonitoredPlaylist {
+  sourceKind: MonitoringSourceKind;
   id: string;
   name: string;
   coverUrl: string | null;
@@ -21,14 +23,16 @@ export interface MonitoredPlaylist {
 }
 
 interface PlaylistRow {
+  source_kind: MonitoringSourceKind;
   id: string; name: string; cover_url: string | null; owner_uid: string; owner_name: string;
   owned: number; special_type: number | null; list_order: number; baseline_established: number;
   bound_at: string; total_count: number; normal_count: number; missing_count: number; grey_count: number; mismatch_count: number;
 }
 
-export async function listMonitoredPlaylists(db: D1DatabasePort): Promise<MonitoredPlaylist[]> {
+export async function listMonitoringSources(db: D1DatabasePort): Promise<MonitoredPlaylist[]> {
   const result = await db.prepare(`
-    SELECT p.id, p.name, p.cover_url, p.owner_uid, p.owner_name, p.owned,
+    SELECT p.id, CASE WHEN p.id = '${CLOUD_SOURCE_ID}' THEN 'cloud' ELSE 'playlist' END AS source_kind,
+           p.name, p.cover_url, p.owner_uid, p.owner_name, p.owned,
            p.special_type, p.list_order, p.baseline_established, p.bound_at,
            COUNT(s.song_id) AS total_count,
            SUM(CASE WHEN s.bucket = 'normal' THEN 1 ELSE 0 END) AS normal_count,
@@ -36,10 +40,11 @@ export async function listMonitoredPlaylists(db: D1DatabasePort): Promise<Monito
            SUM(CASE WHEN s.anomaly_type = 'grey' THEN 1 ELSE 0 END) AS grey_count,
            SUM(CASE WHEN s.anomaly_type = 'mismatch' THEN 1 ELSE 0 END) AS mismatch_count
     FROM monitored_playlists p LEFT JOIN playlist_song_states s ON s.playlist_id = p.id
-    GROUP BY p.id ORDER BY p.list_order, p.id
+    GROUP BY p.id ORDER BY CASE WHEN p.id = '${CLOUD_SOURCE_ID}' THEN 1 ELSE 0 END, p.list_order, p.id
   `).all<PlaylistRow>();
   if (!result.success) throw new Error(result.error || "Could not load monitored playlists");
   return (result.results ?? []).map((row) => ({
+    sourceKind: row.source_kind,
     id: row.id, name: row.name, coverUrl: row.cover_url, ownerUid: row.owner_uid,
     ownerName: row.owner_name, owned: row.owned === 1, specialType: row.special_type,
     listOrder: row.list_order, baselineEstablished: row.baseline_established === 1,
@@ -48,6 +53,10 @@ export async function listMonitoredPlaylists(db: D1DatabasePort): Promise<Monito
     greyCount: Number(row.grey_count || 0),
     mismatchCount: Number(row.mismatch_count || 0),
   }));
+}
+
+export async function listMonitoredPlaylists(db: D1DatabasePort): Promise<MonitoredPlaylist[]> {
+  return (await listMonitoringSources(db)).filter((source) => source.sourceKind === "playlist");
 }
 
 export function defaultPlaylist(playlists: MonitoredPlaylist[]): MonitoredPlaylist | null {

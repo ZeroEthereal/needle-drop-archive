@@ -5,7 +5,7 @@ const PAGE_SIZE = 10;
 interface HistoryBatch {
   id: string;
   trigger: "manual" | "scheduled";
-  scope: "all" | "playlist";
+  scope: "all" | "playlist" | "cloud";
   status: "success" | "failed";
   playlist_count: number;
   completed_at: string;
@@ -53,7 +53,7 @@ export async function listSyncHistory(db: D1Database, offset: number, now = new 
       .map((task) => ({ id: task.playlist_id, name: task.playlist_name }));
     const successful = batch.status === "success" && entries.length === batch.playlist_count
       && failedPlaylists.length === 0;
-    const playlist = batch.scope === "playlist" && entries[0]
+    const playlist = batch.scope !== "all" && entries[0]
       ? { id: entries[0].playlist_id, name: entries[0].playlist_name } : undefined;
     return {
       id: batch.id, trigger: batch.trigger, scope: batch.scope,

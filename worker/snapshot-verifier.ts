@@ -1,5 +1,6 @@
 import {
   NeteaseError,
+  NeteaseClient,
   type AccountSnapshot,
   type NeteaseSession,
   type PlaybackAvailability,
@@ -7,6 +8,17 @@ import {
   type SongSummary,
 } from "../lib/netease/index.ts";
 import { sameSongIdentity, type SyncState } from "../lib/sync/state-machine.ts";
+
+export function cloudVerificationClient(client: NeteaseClient, userId: string): SnapshotVerificationClient {
+  return {
+    getPlaylistDetail: (_id, session) => {
+      if (!session) throw new Error("Cloud verification requires a session");
+      return client.getCloudPlaylist(session, userId);
+    },
+    getPlaybackAvailability: (ids, session) => client.getPlaybackAvailability(ids, session),
+    getSongMetadata: (ids, session) => client.getCloudSongMetadata(ids, session),
+  };
+}
 
 export interface SnapshotVerificationClient {
   getPlaylistDetail(

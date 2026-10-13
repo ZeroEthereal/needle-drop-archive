@@ -19,12 +19,13 @@ import {
 } from "./auth-flows";
 import { getInstanceConfig, playlistPublicMetadata } from "./instance-config";
 import {
-  completeSongEverywhere, defaultPlaylist, listMonitoredPlaylists,
+  completeSongEverywhere, defaultPlaylist, listMonitoredPlaylists, listMonitoringSources,
   listMultiRecovery, listPlaylistSongs,
 } from "../lib/sync/repository";
 import { createSyncBatch, latestBatchStatus, latestCompletedBatch } from "./sync-batches";
 import { listSyncHistory } from "./sync-history";
 import type { PlaylistSelection } from "./playlist-set-binding";
+import { CLOUD_SOURCE_ID } from "../lib/monitoring-source";
 
 const QR_CREATE_COOLDOWN_MS = 5_000;
 
@@ -156,7 +157,7 @@ app.get("/api/recovery", async (context) => {
   }
   const type = requestedType === "missing" || requestedType === "grey" || requestedType === "mismatch" ? requestedType : undefined;
   const requestedPlaylist = url.searchParams.get("playlistId");
-  const monitored = await listMonitoredPlaylists(context.env.DB);
+  const monitored = await listMonitoringSources(context.env.DB);
   if (requestedPlaylist && requestedPlaylist !== "all" && !monitored.some((p) => p.id === requestedPlaylist))
     throw new ApiError(400, "INVALID_PLAYLIST", "所选歌单未受监控。");
   const page = await listMultiRecovery(context.env.DB, {
@@ -222,13 +223,31 @@ app.get("/api/likes", async (context) => {
   });
 });
 
+app.get("/api/cloud", async (context) => {
+  const url = new URL(context.req.url);
+  const { offset, limit } = pagination(url);
+  const sources = await listMonitoringSources(context.env.DB);
+  if (!sources.some((source) => source.id === CLOUD_SOURCE_ID))
+    throw new ApiError(409, "INSTANCE_NOT_CONFIGURED", "请先连接网易云账号。");
+  const requestedState = url.searchParams.get("state");
+  if (requestedState && !["all", "playable", "grey", "missing", "mismatch"].includes(requestedState))
+    throw new ApiError(400, "INVALID_SONG_STATE", "歌曲状态无效。");
+  const state = requestedState && requestedState !== "all"
+    ? requestedState as "playable" | "grey" | "missing" | "mismatch" : undefined;
+  const page = await listPlaylistSongs(context.env.DB, CLOUD_SOURCE_ID, {
+    state, query: searchQuery(url), offset, limit,
+  });
+  return context.json({ items: page.items, nextCursor: nextCursor(page.nextOffset), total: page.total,
+    source: "cloud" });
+});
+
 app.get("/api/sync/history", async (context) => {
   const offset = positiveInteger(new URL(context.req.url).searchParams.get("offset"), 0, "offset");
   return context.json(await listSyncHistory(context.env.DB, offset));
 });
 
 app.get("/api/sync/status", async (context) => {
-  const [session, config, pending, playlists, batch, recoveryCounts, playlistTasks, completedBatch, lastBatchSuccess] = await Promise.all([
+  const [session, config, pending, sources, batch, recoveryCounts, playlistTasks, completedBatch, lastBatchSuccess] = await Promise.all([
     getNeteaseSessionHealth(context.env),
     getInstanceConfig(context.env),
     context.env.DB.prepare(`
@@ -243,7 +262,7 @@ app.get("/api/sync/status", async (context) => {
       created_at: string;
       updated_at: string;
     }>(),
-    listMonitoredPlaylists(context.env.DB),
+    listMonitoringSources(context.env.DB),
     latestBatchStatus(context.env),
     context.env.DB.prepare(`SELECT COUNT(DISTINCT song_id) AS total,
       COUNT(DISTINCT CASE WHEN anomaly_type = 'grey' THEN song_id END) AS grey,
@@ -264,6 +283,8 @@ app.get("/api/sync/status", async (context) => {
   ]);
 
   const queued = batch?.batch.status === "queued";
+  const playlists = sources.filter((source) => source.sourceKind === "playlist");
+  const cloud = sources.find((source) => source.sourceKind === "cloud");
   const sessionStatus = publicSessionState(session.state);
   const selected = defaultPlaylist(playlists);
   const batchState = batch?.batch.status as "queued" | "running" | "success" | "failed" | undefined;
@@ -284,7 +305,7 @@ app.get("/api/sync/status", async (context) => {
     lastSuccessAt: lastBatchSuccess?.completed_at ?? null,
     error: batchState === "failed"
       ? String(batch?.tasks.find((task) => task.status === "failed")?.error_message ??
-        batch?.batch.error_message ?? "部分歌单没有完成同步。")
+        batch?.batch.error_message ?? "部分监控项没有完成同步。")
       : null,
     sessionStatus,
     session: {
@@ -310,6 +331,7 @@ app.get("/api/sync/status", async (context) => {
       boundAt: selected.boundAt,
     } : null,
     playlists: playlists.map((item) => ({
+      sourceKind: item.sourceKind,
       id: item.id, name: item.name, coverUrl: item.coverUrl,
       ownerUid: item.ownerUid, ownerName: item.ownerName, owned: item.owned,
       specialType: item.specialType, listOrder: item.listOrder,
@@ -318,6 +340,8 @@ app.get("/api/sync/status", async (context) => {
       greyCount: item.greyCount,
       task: playlistTasks.results?.find((task) => task.playlist_id === item.id) ?? null,
     })),
+    cloud: cloud ? { ...cloud,
+      task: playlistTasks.results?.find((task) => task.playlist_id === CLOUD_SOURCE_ID) ?? null } : null,
     batch: batch ? { ...batch.batch, tasks: batch.tasks } : null,
     completedBatch,
     manualSyncDisabled: batch?.batch.status === "queued" || batch?.batch.status === "running" ||
@@ -346,11 +370,16 @@ app.post("/api/sync", async (context) => {
     throw new ApiError(409, "INSTANCE_NOT_CONFIGURED", "请先连接网易云并选择要监控的歌单。");
   }
   const body = await jsonBody(context);
+  if (body.source !== undefined && body.source !== "cloud")
+    throw new ApiError(400, "INVALID_SOURCE", "source 只能是 cloud。");
+  if (body.source === "cloud" && body.playlistId !== undefined)
+    throw new ApiError(400, "INVALID_SYNC_TARGET", "云盘与歌单目标不能同时指定。");
   const playlistId = body.playlistId === undefined ? undefined
     : requiredNumericId(body.playlistId, "歌单 ID");
   try {
-    const batchId = await createSyncBatch(context.env, "manual", playlistId);
-    return context.json({ state: "queued", batchId, playlistId: playlistId ?? null }, 202);
+    const batchId = await createSyncBatch(context.env, "manual", body.source === "cloud" ? CLOUD_SOURCE_ID : playlistId);
+    return context.json({ state: "queued", batchId, playlistId: playlistId ?? null,
+      source: body.source ?? null }, 202);
   } catch (error) {
     if (error instanceof Error && error.message === "SYNC_IN_PROGRESS")
       throw new ApiError(409, "SYNC_IN_PROGRESS", "已有同步正在进行，请等待当前任务完成。");

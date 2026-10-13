@@ -1,6 +1,7 @@
 "use client";
 
 import SyncHistory from "./SyncHistory";
+import { CLOUD_SOURCE_ID } from "../../lib/monitoring-source";
 import { formatSongDuration, normalizeSongTextList, songSubtitle, validSongDuration } from "../../lib/song-display";
 
 import {
@@ -54,6 +55,7 @@ const navItems: Array<{
   { id: "recovery", label: "待找回", eyebrow: "RECOVER", glyph: "⌁" },
   { id: "sync", label: "同步状态", eyebrow: "PULSE", glyph: "↻" },
   { id: "likes", label: "歌单歌曲", eyebrow: "LIBRARY", glyph: "♡" },
+  { id: "cloud", label: "网易云盘", eyebrow: "CLOUD", glyph: "☁" },
 ];
 
 const motionOptions: Array<{ id: MotionMode; label: string }> = [
@@ -185,11 +187,13 @@ function normalizeStatus(value: unknown): SyncStatus {
   const playlistRecord = isRecord(record.playlist) ? record.playlist : undefined;
   const bindingRecord = isRecord(record.binding) ? record.binding : undefined;
   const bindingError = isRecord(bindingRecord?.error) ? bindingRecord.error : undefined;
-  const playlists = Array.isArray(record.playlists) ? record.playlists.flatMap((entry): MonitoredPlaylistStatus[] => {
+  const normalizeSource = (entry: unknown): MonitoredPlaylistStatus[] => {
     if (!isRecord(entry)) return [];
     const id = firstString(entry.id);
     if (!id) return [];
-    return [{ id, name: firstString(entry.name) ?? "歌单", coverUrl: firstString(entry.coverUrl),
+    return [{ id, sourceKind: entry.sourceKind === "cloud" ? "cloud" : "playlist",
+      baselineEstablished: typeof entry.baselineEstablished === "boolean" ? entry.baselineEstablished : undefined,
+      name: firstString(entry.name) ?? "歌单", coverUrl: firstString(entry.coverUrl),
       ownerUid: firstString(entry.ownerUid), ownerName: firstString(entry.ownerName),
       owned: entry.owned === true, specialType: firstNumber(entry.specialType),
       listOrder: firstNumber(entry.listOrder) ?? 0, boundAt: firstString(entry.boundAt),
@@ -199,7 +203,8 @@ function normalizeStatus(value: unknown): SyncStatus {
       greyCount: firstNumber(entry.greyCount) ?? 0,
       mismatchCount: firstNumber(entry.mismatchCount) ?? 0,
       task: normalizeTask(entry.task), }];
-  }) : [];
+  };
+  const playlists = Array.isArray(record.playlists) ? record.playlists.flatMap(normalizeSource) : [];
   let progress = firstNumber(record.progress);
   if (progress !== undefined && progress > 1) progress /= 100;
 
@@ -223,6 +228,7 @@ function normalizeStatus(value: unknown): SyncStatus {
     recoveryMissingCount: firstNumber(record.recoveryMissingCount),
     recoveryMismatchCount: firstNumber(record.recoveryMismatchCount),
     playlists,
+    cloud: normalizeSource(record.cloud)[0],
     batch: normalizeBatch(record.batch),
     completedBatch: normalizeBatch(record.completedBatch),
     manualSyncDisabled: record.manualSyncDisabled === true,
@@ -747,10 +753,11 @@ function RecoveryView({
             { value: "mismatch", label: "错配", count: counts.mismatch },
           ]}
         />
-        <label className="playlist-filter-label">歌单
+        <label className="playlist-filter-label">来源
           <select value={playlistFilter} onChange={(event) => setPlaylistFilter(event.target.value)}>
-            <option value="all">全部歌单</option>
+            <option value="all">全部来源</option>
             {status?.playlists?.map((playlist) => <option value={playlist.id} key={playlist.id}>{playlist.name}</option>)}
+            {status?.cloud ? <option value={CLOUD_SOURCE_ID}>网易云盘</option> : null}
           </select>
         </label>
         <SearchBox value={query} onChange={setQuery} placeholder="搜索歌名、歌手或专辑" />
@@ -855,21 +862,23 @@ function PlaylistPulse({ playlist, disabled, onSync, filter, onFilterChange }: {
   filter: LibraryFilter; onFilterChange: (value: LibraryFilter) => void;
 }) {
   const task = playlist?.task;
+  const isCloud = playlist?.sourceKind === "cloud";
+  const subject = isCloud ? "云盘" : "歌单";
   const playlistName = playlist ? playlistDisplayName(playlist) : "歌单歌曲";
   const active = task?.status === "running" || task?.status === "queued";
   const currentPhase = phaseIndex(task?.phase);
-  const steps = ["验证会话", "读取歌单", "检查状态", "复核异常", "完成同步"];
+  const steps = ["验证会话", `读取${subject}`, "检查状态", "复核异常", "完成同步"];
   return <>
     <PageHeading eyebrow="KEEP THE BEAT ALIVE" title={playlistName}
-      description={playlist ? `查看 ${playlistName} 的守护状态，并可单独同步这个歌单。` : "等待选择歌单。"}
+      description={playlist ? `查看 ${playlistName} 的守护状态，并可单独同步这个${subject}。` : "等待选择歌单。"}
       right={<button type="button" className="primary-button sync-button"
         disabled={!playlist || disabled} onClick={onSync}><span className={active ? "spin-glyph" : ""}>↻</span>
         {active ? "正在同步" : "立即同步"}</button>} />
     <section className={`sync-console state-${task?.status ?? "idle"}`}>
       <div className="console-head"><div>
         <span className="console-kicker"><i /> SYSTEM PULSE</span>
-        <h2>{active ? "正在同步中" : task?.status === "failed" ? "上次同步失败" : "守护正常运行"}</h2>
-        <p>{task?.phase ?? (task?.completedAt ? `最近同步于 ${formatDateTime(task.completedAt)}` : "基线已建立，等待第一次扫描")}</p>
+        <h2>{active ? "正在同步中" : task?.status === "failed" ? "上次同步失败" : playlist?.baselineEstablished === false ? "等待建立基线" : "守护正常运行"}</h2>
+        <p>{task?.phase ?? (task?.completedAt ? `最近同步于 ${formatDateTime(task.completedAt)}` : playlist?.baselineEstablished === false ? "等待第一次完整同步建立基线" : "基线已建立，等待第一次扫描")}</p>
       </div><div className="pulse-core" aria-hidden="true"><i /><span /></div></div>
       <div className={`sync-progress ${active ? "is-indeterminate" : ""}`}><i /></div>
       <div className="sync-steps">{steps.map((label, index) => {
@@ -879,14 +888,14 @@ function PlaylistPulse({ playlist, disabled, onSync, filter, onFilterChange }: {
           <span>{complete ? "✓" : String(index + 1).padStart(2, "0")}</span><p>{label}</p>
         </div>;
       })}</div>
-      {task?.error && task.status === "failed" ? <div className="sync-error"><strong>这个歌单同步失败</strong><p>{task.error}</p></div> : null}
+      {task?.error && task.status === "failed" ? <div className="sync-error"><strong>这个{subject}同步失败</strong><p>{task.error}</p></div> : null}
     </section>
-    <section className="sync-metrics" role="group" aria-label="歌单状态筛选">
+    <section className="sync-metrics" role="group" aria-label={`${subject}状态筛选`}>
       {([
         { value: "all", label: "全部", count: playlist?.totalSongCount, accent: "cyan", description: "正常、变灰、消失与错配的总和" },
         { value: "playable", label: "正常", count: playlist?.normalCount, accent: "lime", description: "资料一致且可以播放" },
-        { value: "grey", label: "变灰", count: playlist?.greyCount, accent: "violet", description: "仍在歌单但不可播放" },
-        { value: "missing", label: "消失", count: playlist?.missingCount, accent: "red", description: "已经离开这个歌单" },
+        { value: "grey", label: "变灰", count: playlist?.greyCount, accent: "violet", description: `仍在${subject}但不可播放` },
+        { value: "missing", label: "消失", count: playlist?.missingCount, accent: "red", description: `已经离开这个${subject}` },
         { value: "mismatch", label: "错配", count: playlist?.mismatchCount, accent: "amber", description: "可播放但歌名或歌手变化" },
       ] as const).map((item) => <button type="button" key={item.value}
         className={`metric-card accent-${item.accent} ${filter === item.value ? "is-active" : ""}`}
@@ -898,6 +907,7 @@ function PlaylistPulse({ playlist, disabled, onSync, filter, onFilterChange }: {
 }
 
 function LikesView({
+  cloud = false,
   filter,
   onFilterChange,
   loadState,
@@ -916,6 +926,7 @@ function LikesView({
   syncDisabled,
   onSyncPlaylist,
 }: {
+  cloud?: boolean;
   filter: LibraryFilter;
   onFilterChange: (value: LibraryFilter) => void;
   loadState: LoadState;
@@ -934,6 +945,7 @@ function LikesView({
   syncDisabled: boolean;
   onSyncPlaylist: () => void;
 }) {
+  const subject = cloud ? "云盘" : "歌单";
   const filtered = useMemo(
     () =>
       songs.filter((song) => includesSong(song, query)),
@@ -946,8 +958,8 @@ function LikesView({
       <div className="toolbar glass-panel">
         <p className="toolbar-note">歌曲状态显示为“正常”、“已变灰”、“已消失”或“已错配”。</p>
         <div className="library-tools">
-          <SearchBox value={query} onChange={setQuery} placeholder="在歌单里搜索" />
-          <div className="view-switch" role="group" aria-label="歌单视图">
+          <SearchBox value={query} onChange={setQuery} placeholder={`在${subject}里搜索`} />
+          <div className="view-switch" role="group" aria-label={`${subject}视图`}>
             <button type="button" className={viewMode === "list" ? "is-active" : ""} onClick={() => setViewMode("list")} aria-pressed={viewMode === "list"}>列表</button>
             <button type="button" className={viewMode === "grid" ? "is-active" : ""} onClick={() => setViewMode("grid")} aria-pressed={viewMode === "grid"}>封面</button>
           </div>
@@ -958,8 +970,8 @@ function LikesView({
       {loadState === "unavailable" ? (
         <EmptyState
           unavailable
-          title="还没有建立歌单基线"
-          body="连接网易云并选择歌单后，系统会先完整验证，再自动建立第一份基线。"
+          title={`还没有建立${subject}基线`}
+          body={cloud ? "连接网易云后，点击立即同步或等待自动同步建立云盘基线。" : "连接网易云并选择歌单后，系统会先完整验证，再自动建立第一份基线。"}
           action={
             <button type="button" className="primary-button" onClick={onGoSync}>
               建立第一次同步 <span>→</span>
@@ -969,8 +981,8 @@ function LikesView({
       ) : null}
       {loadState === "ready" && filtered.length === 0 ? (
         <EmptyState
-          title={query || filter !== "all" ? "没有符合条件的歌曲" : "歌单快照还是空的"}
-          body={query || filter !== "all" ? "换个关键词或筛选条件试试。" : "下一次成功同步会把当前歌单歌曲带到这里。"}
+          title={query || filter !== "all" ? "没有符合条件的歌曲" : `${subject}快照还是空的`}
+          body={query || filter !== "all" ? "换个关键词或筛选条件试试。" : `下一次成功同步会把当前${subject}歌曲带到这里。`}
         />
       ) : null}
       {loadState === "ready" && filtered.length ? (
@@ -1040,7 +1052,7 @@ function SyncView({
 }) {
   const currentPhase = phaseIndex(status?.phase);
   const isActive = status?.batch?.status === "running" || status?.batch?.status === "queued";
-  const steps = ["验证会话", "读取歌单", "检查状态", "复核异常", "完成同步"];
+  const steps = ["验证会话", "读取歌曲", "检查状态", "复核异常", "完成同步"];
   const sessionGood = status?.sessionStatus === "valid";
   const configured = status?.setupState === "ready" && Boolean(status.playlist);
   const progressStyle = status?.progress !== undefined
@@ -1086,10 +1098,10 @@ function SyncView({
             <div className="console-head">
               <div>
                 <span className="console-kicker"><i /> SYSTEM PULSE</span>
-                <h2>{isActive ? "正在依次同步歌单" : syncLabel(status)}</h2>
+                <h2>{isActive ? "正在依次同步监控项" : syncLabel(status)}</h2>
                 <p>{status.batch?.currentPlaylistId
-                  ? `当前歌单：${status.playlists?.find((item) => item.id === status.batch?.currentPlaylistId)?.name ?? status.batch.currentPlaylistId}`
-                  : status.batch ? `已完成 ${status.batch.successCount + status.batch.failureCount} / ${status.batch.playlistCount} 个歌单`
+                  ? `当前监控项：${[...(status.playlists ?? []), ...(status.cloud ? [status.cloud] : [])].find((item) => item.id === status.batch?.currentPlaylistId)?.name ?? status.batch.currentPlaylistId}`
+                  : status.batch ? `已完成 ${status.batch.successCount + status.batch.failureCount} / ${status.batch.playlistCount} 个监控项`
                     : "等待全量扫描"}</p>
               </div>
               <div className="pulse-core" aria-hidden="true"><i /><span /></div>
@@ -1287,7 +1299,7 @@ function FreshBaselineConfirmModal({ onClose, onConfirm }: {
       <button type="button" className="modal-close" onClick={onClose} aria-label="关闭">×</button>
       <p className="micro-label">FRESH NETEASE BASELINE</p>
       <h2>从网易云重新建立基线？</h2>
-      <p className="rebind-confirm-warning">会完整读取并复核全部已选歌单；只有全部成功后，才一次性清空旧歌曲状态、待找回和旧同步记录并写入新快照。未选歌单也会取消监控。读取失败时当前数据不变。</p>
+      <p className="rebind-confirm-warning">会完整读取并复核全部已选歌单及网易云盘；只有全部成功后，才一次性清空旧歌曲状态、待找回和旧同步记录并写入新快照。未选歌单也会取消监控。读取失败时当前数据不变。</p>
       <div className="modal-actions rebind-confirm-actions">
         <button type="button" className="quiet-button" onClick={onClose}>取消</button>
         <button type="button" className="primary-button" onClick={onConfirm}>确认重建</button>
@@ -1313,6 +1325,11 @@ export function MusicVault() {
   const [likesQuery, setLikesQuery] = useState("");
   const [likesFilter, setLikesFilter] = useState<LibraryFilter>("all");
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string>();
+  const [playlistExpanded, setPlaylistExpanded] = useState(false);
+  const [navigationReady, setNavigationReady] = useState(false);
+  const libraryVisited = useRef(false);
+  const librarySelection = useRef<string | undefined>(undefined);
+  const navigationAccount = useRef<string | undefined>(undefined);
   const [mobilePlaylistOpen, setMobilePlaylistOpen] = useState(false);
   const [likesTotal, setLikesTotal] = useState<number>();
   const [likesCursor, setLikesCursor] = useState<string>();
@@ -1433,17 +1450,19 @@ export function MusicVault() {
   }, [notify, recoveryFilter, recoveryPlaylistFilter, recoverySearch]);
 
   const loadLikes = useCallback(async (cursor?: string, append = false) => {
-    if (!selectedPlaylistId) return;
+    if (view !== "likes" && view !== "cloud") return;
+    if (view === "likes" && !selectedPlaylistId) return;
+    if (likesQuery !== likesSearch) return;
     const sequence = append ? likesRequest.current : ++likesRequest.current;
     if (append) setLoadingMore(true);
     else setLikesState("loading");
     const params = new URLSearchParams({ limit: String(LIKES_PAGE_SIZE) });
-    params.set("playlistId", selectedPlaylistId);
+    if (view === "likes" && selectedPlaylistId) params.set("playlistId", selectedPlaylistId);
     params.set("state", likesFilter);
     if (likesSearch.trim()) params.set("query", likesSearch.trim());
     if (cursor) params.set("cursor", cursor);
     try {
-      const raw = await requestJson([{ url: `/api/likes?${params}` }]);
+      const raw = await requestJson([{ url: view === "cloud" ? `/api/cloud?${params}` : `/api/likes?${params}` }]);
       if (sequence !== likesRequest.current) return;
       const page = normalizePage(raw, (item) => normalizeSong(item));
       setSongs((current) => {
@@ -1463,9 +1482,9 @@ export function MusicVault() {
         notify("下一段歌单暂时没有载入，请稍后再试。", "bad");
       }
     } finally {
-      setLoadingMore(false);
+      if (sequence === likesRequest.current) setLoadingMore(false);
     }
-  }, [likesSearch, likesFilter, notify, selectedPlaylistId]);
+  }, [likesQuery, likesSearch, likesFilter, notify, selectedPlaylistId, view]);
 
   const loadStatus = useCallback(async (showLoading = false) => {
     if (document.visibilityState !== "visible" || statusRequestInFlight.current) return;
@@ -1477,10 +1496,44 @@ export function MusicVault() {
       // A response started before a new task cannot settle that task's status.
       if (version !== taskStatusVersion.current) return;
       const next = normalizeStatus(raw);
+      const accountUid = next.profile?.userId;
+      const selectPlaylist = (id: string | undefined) => {
+        librarySelection.current = id;
+        setSelectedPlaylistId(id);
+      };
+      if (!initialStatusLoaded.current) {
+        try {
+          const saved: unknown = JSON.parse(window.sessionStorage.getItem("needle-drop-navigation") ?? "null");
+          if (isRecord(saved) && saved.accountUid === accountUid) {
+            if (["recovery", "sync", "likes", "cloud"].includes(String(saved.view))) setView(saved.view as ViewId);
+            setPlaylistExpanded(saved.expanded === true);
+            const id = firstString(saved.selectedPlaylistId);
+            const valid = next.playlists?.some((playlist) => playlist.id === id);
+            libraryVisited.current = saved.visited === true;
+            selectPlaylist(valid ? id : next.playlists?.[0]?.id);
+          } else selectPlaylist(next.playlists?.[0]?.id);
+        } catch { selectPlaylist(next.playlists?.[0]?.id); }
+        setNavigationReady(true);
+      } else if (navigationAccount.current !== accountUid) {
+        libraryVisited.current = false;
+        likesRequest.current += 1;
+        setPlaylistExpanded(false); setView("recovery");
+        setSongs([]); setLikesCursor(undefined); setLikesQuery(""); setLikesFilter("all");
+        selectPlaylist(next.playlists?.[0]?.id);
+        setRecoveryPlaylistFilter("all");
+      } else {
+        const id = next.playlists?.some((playlist) => playlist.id === librarySelection.current)
+          ? librarySelection.current : next.playlists?.[0]?.id;
+        if (id !== librarySelection.current) {
+          likesRequest.current += 1;
+          setSongs([]); setLikesCursor(undefined); setLikesTotal(undefined);
+          setLikesQuery(""); setLikesFilter("all"); setLoadingMore(false);
+          selectPlaylist(id);
+        }
+      }
+      navigationAccount.current = accountUid;
       setStatus(next);
       setAwaitingTaskStatus(false);
-      setSelectedPlaylistId((current) => next.playlists?.some((p) => p.id === current)
-        ? current : next.playlist?.id);
       const completed = next.completedBatch;
       if (completed) {
         if (initialStatusLoaded.current && !completedBatchIds.current.has(completed.id)
@@ -1499,6 +1552,16 @@ export function MusicVault() {
       statusRequestInFlight.current = false;
     }
   }, []);
+
+  useEffect(() => {
+    if (!navigationReady) return;
+    try {
+      window.sessionStorage.setItem("needle-drop-navigation", JSON.stringify({
+        accountUid: status?.profile?.userId, expanded: playlistExpanded,
+        selectedPlaylistId, view, visited: libraryVisited.current,
+      }));
+    } catch { /* Navigation still works when browser storage is unavailable. */ }
+  }, [navigationReady, playlistExpanded, selectedPlaylistId, status?.profile?.userId, view]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadRecovery(undefined, false), 0);
@@ -1556,7 +1619,7 @@ export function MusicVault() {
 
   useEffect(() => {
     const node = likesSentinelRef.current;
-    if (!node || !likesCursor || view !== "likes") return;
+    if (!node || !likesCursor || (view !== "likes" && view !== "cloud")) return;
     const observer = new IntersectionObserver(
       (entries) => entries[0]?.isIntersecting && loadMoreLikes(),
       { rootMargin: "500px 0px" },
@@ -1623,7 +1686,7 @@ export function MusicVault() {
     setSyncing(true);
     try {
       await requestJson([{ url: "/api/sync", init: { method: "POST",
-        body: JSON.stringify(playlistId ? { playlistId } : {}) } }]);
+        body: JSON.stringify(playlistId === CLOUD_SOURCE_ID ? { source: "cloud" } : playlistId ? { playlistId } : {}) } }]);
       taskStatusVersion.current += 1;
       setAwaitingTaskStatus(true);
       setStatus((current) => current ? { ...current, state: "queued", phase: "同步任务已进入队列" } : current);
@@ -1802,7 +1865,7 @@ export function MusicVault() {
       taskStatusVersion.current += 1;
       setAwaitingTaskStatus(true);
       setPlaylistOpen(false);
-      notify(freshBaseline ? "正在从网易云完整重建全部已选歌单基线；成功后替换旧状态。"
+      notify(freshBaseline ? "正在从网易云完整重建全部已选歌单及云盘基线；成功后替换旧状态。"
         : "正在完整读取新增歌单；全部成功后才会更新选择。", "good");
       void loadStatus(false);
     } catch (error) {
@@ -1813,7 +1876,9 @@ export function MusicVault() {
   };
 
   const switchPlaylist = (id: string) => {
-    if (id === selectedPlaylistId) { setView("likes"); setMobilePlaylistOpen(false); return; }
+    libraryVisited.current = true;
+    librarySelection.current = id;
+    if (id === selectedPlaylistId && view === "likes") { setMobilePlaylistOpen(false); return; }
     likesRequest.current += 1;
     setSongs([]);
     setLikesCursor(undefined);
@@ -1821,9 +1886,31 @@ export function MusicVault() {
     setLikesQuery("");
     setLoadingMore(false);
     setLikesFilter("all");
+    setLikesState("loading");
     setSelectedPlaylistId(id);
     setView("likes");
     setMobilePlaylistOpen(false);
+  };
+
+  const switchView = (next: ViewId) => {
+    if (next === view) return;
+    likesRequest.current += 1;
+    if (next === "cloud" || view === "cloud") {
+      setSongs([]); setLikesCursor(undefined); setLikesTotal(undefined);
+      setLikesQuery(""); setLikesFilter("all"); setLoadingMore(false); setLikesState("loading");
+    }
+    setView(next);
+    setMobilePlaylistOpen(false);
+  };
+
+  const togglePlaylists = () => {
+    const expanded = !playlistExpanded;
+    setPlaylistExpanded(expanded);
+    if (expanded) {
+      const id = libraryVisited.current ? selectedPlaylistId : status?.playlists?.[0]?.id;
+      if (id) switchPlaylist(id);
+      else switchView("likes");
+    }
   };
 
   const pendingCount = status
@@ -1849,13 +1936,18 @@ export function MusicVault() {
         </div>
         <nav aria-label="主导航">
           {navItems.map((item) => <Fragment key={item.id}>
-            <button type="button" key={item.id} className={view === item.id ? "is-active" : ""} onClick={() => setView(item.id)} aria-current={view === item.id ? "page" : undefined}>
+            <button type="button" key={item.id} className={view === item.id ? "is-active" : ""}
+              onClick={() => item.id === "likes" ? togglePlaylists() : switchView(item.id)}
+              aria-expanded={item.id === "likes" ? playlistExpanded : undefined}
+              aria-controls={item.id === "likes" ? "sidebar-playlists" : undefined}
+              aria-current={view === item.id ? "page" : undefined}>
               <span className="nav-glyph" aria-hidden="true">{item.glyph}</span>
               <span><small>{item.eyebrow}</small>{item.label}</span>
+              {item.id === "likes" ? <span className="playlist-chevron" aria-hidden="true">{playlistExpanded ? "⌃" : "⌄"}</span> : null}
               {item.id === "recovery" && pendingCount ? <b>{pendingCount}</b> : null}
               <i aria-hidden="true" />
             </button>
-            {item.id === "likes" ? <div className="sidebar-playlists">
+            {item.id === "likes" ? <div id="sidebar-playlists" className="sidebar-playlists" hidden={!playlistExpanded}>
               {status?.playlists?.map((playlist) => <button type="button" key={playlist.id}
                 className={selectedPlaylistId === playlist.id && view === "likes" ? "is-active" : ""}
                 onClick={() => switchPlaylist(playlist.id)}>{playlistDisplayName(playlist)}<small>{playlist.totalSongCount} 首</small></button>)}
@@ -1909,8 +2001,9 @@ export function MusicVault() {
               onGoSync={() => setView("sync")}
             />
           ) : null}
-          {view === "likes" ? (
+          {view === "likes" || view === "cloud" ? (
             <LikesView
+              cloud={view === "cloud"}
               filter={likesFilter}
               onFilterChange={(next) => {
                 if (next === likesFilter) return;
@@ -1930,9 +2023,11 @@ export function MusicVault() {
               sentinelRef={likesSentinelRef}
               onLoadMore={loadMoreLikes}
               onGoSync={() => setView("sync")}
-              playlist={currentPlaylist}
+              playlist={view === "cloud" ? status?.cloud ?? { id: CLOUD_SOURCE_ID, name: "网易云盘",
+                sourceKind: "cloud", owned: true, listOrder: 2147483647, totalSongCount: 0,
+                normalCount: 0, missingCount: 0, greyCount: 0, mismatchCount: 0 } : currentPlaylist}
               syncDisabled={status?.manualSyncDisabled === true || status?.sessionStatus !== "valid" || syncing}
-              onSyncPlaylist={() => void handleSync(selectedPlaylistId)}
+              onSyncPlaylist={() => void handleSync(view === "cloud" ? CLOUD_SOURCE_ID : selectedPlaylistId)}
             />
           ) : null}
           {view === "sync" ? (
@@ -1953,7 +2048,11 @@ export function MusicVault() {
       <nav className="mobile-nav" aria-label="移动端主导航">
         {navItems.map((item) => (
           <button type="button" key={item.id} className={view === item.id ? "is-active" : ""} onClick={() => {
-            setView(item.id); if (item.id === "likes") setMobilePlaylistOpen(true);
+            if (item.id === "likes") {
+              const id = libraryVisited.current ? selectedPlaylistId : status?.playlists?.[0]?.id;
+              if (id) switchPlaylist(id); else switchView("likes");
+              setMobilePlaylistOpen(true);
+            } else switchView(item.id);
           }} aria-current={view === item.id ? "page" : undefined}>
             <span aria-hidden="true">{item.glyph}</span><small>{item.label}</small>
             {item.id === "recovery" && pendingCount ? <b>{pendingCount}</b> : null}
@@ -1994,7 +2093,7 @@ export function MusicVault() {
         onMouseDown={(event) => event.target === event.currentTarget && setBatchSummary(undefined)}>
         <section className="modal-card batch-summary-modal" role="dialog" aria-modal="true" aria-label="同步结果">
           <button type="button" className="modal-close" onClick={() => setBatchSummary(undefined)} aria-label="关闭">×</button>
-          <p className="micro-label">SYNC SUMMARY</p><h2>{batchSummary.status === "success" ? "全部歌单同步完成" : "歌单同步已结束"}</h2>
+          <p className="micro-label">SYNC SUMMARY</p><h2>{batchSummary.status === "success" ? "全部监控项同步完成" : "监控项同步已结束"}</h2>
           <p>成功 {batchSummary.successCount} · 失败 {batchSummary.failureCount} · 未执行 {batchSummary.unexecutedCount}</p>
           <button type="button" className="primary-button" onClick={() => { setBatchSummary(undefined); setView("sync"); }}>查看同步状态</button>
         </section>

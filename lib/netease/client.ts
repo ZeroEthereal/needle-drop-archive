@@ -1,4 +1,5 @@
 import { NeteaseError } from "./errors.ts";
+import { CLOUD_SOURCE_ID } from "../monitoring-source.ts";
 import { normalizeSongTextList, validSongDuration } from "../song-display.ts";
 import {
   createNeteaseSession,
@@ -670,6 +671,63 @@ export class NeteaseClient {
       }));
     }
     return output;
+  }
+
+  private cloudPlaylist(userId: string, songs: CloudSong[]): PlaylistDetail {
+    return {
+      id: CLOUD_SOURCE_ID, name: "网易云盘", userId, ownerName: "网易云用户",
+      coverUrl: null, privacy: 1, specialType: null, trackCount: songs.length,
+      cloudTrackCount: songs.length, trackIds: songs.map((song) => song.id),
+      embeddedTracks: songs.map(cloudSongAsSummary), updateTime: null,
+    };
+  }
+
+  async getCloudPlaylist(session: NeteaseSession, userId: string): Promise<PlaylistDetail> {
+    return this.cloudPlaylist(userId, await this.getAllCloudSongs(session));
+  }
+
+  async getCloudSongMetadata(ids: readonly string[], session: NeteaseSession,
+    cloudSongs?: CloudSong[]): Promise<{
+      songs: Array<{ id: string; song: SongSummary; inCloud: boolean }>;
+      cloudSongs: CloudSong[]; warnings: string[];
+    }> {
+    const cloud = cloudSongs ?? await this.getCloudSongDetails(ids, session);
+    const fallback = new Map<string, CloudSong>();
+    for (const song of cloud) {
+      fallback.set(song.id, song);
+      if (song.simpleSong) fallback.set(song.simpleSong.id, song);
+    }
+    const details = await this.getSongDetails(ids, session);
+    const detailById = new Map(details.songs.map((song) => [song.id, song]));
+    return { cloudSongs: cloud, warnings: [], songs: ids.map((id) => {
+      const song = detailById.get(id) ?? (fallback.has(id) ? cloudSongAsSummary(fallback.get(id)!) : null);
+      if (!song) throw new NeteaseError("incomplete_response", "云盘歌曲资料不完整，本次同步已停止。",
+        { endpoint: "/api/v1/cloud/get/byids" });
+      return { id, song, inCloud: true };
+    }) };
+  }
+
+  async getCloudAccountSnapshot(session: NeteaseSession, options: Omit<AccountSnapshotOptions, "playlistId"> = {}): Promise<AccountSnapshot> {
+    const login = await this.getLoginStatus(session);
+    if (login.state !== "valid" || !login.profile) throw loginStateError(login.state);
+    if (options.expectedUserId && login.profile.userId !== options.expectedUserId)
+      throw new NeteaseError("uid_mismatch", "云盘登录账号与绑定账号不一致。");
+    const cloudSongs = await this.getAllCloudSongs(session);
+    const playlist = this.cloudPlaylist(login.profile.userId, cloudSongs);
+    await options.onPlaylistRead?.();
+    const metadata = await this.getCloudSongMetadata(playlist.trackIds, session, cloudSongs);
+    const availability = new Map((await this.getPlaybackAvailability(playlist.trackIds, session))
+      .map((item) => [item.id, item]));
+    return {
+      capturedAt: new Date(this.now()).toISOString(), userId: login.profile.userId,
+      playlist, trackIds: playlist.trackIds, cloudSongs, warnings: metadata.warnings,
+      songs: metadata.songs.map((item) => {
+        const playback = availability.get(item.id);
+        if (!playback) throw new NeteaseError("incomplete_response", "云盘播放状态不完整，本次同步已停止。");
+        return { ...item, playable: playback.playable, playbackCode: playback.code,
+          playbackReason: playback.reason };
+      }),
+    };
   }
 
   async getSongDetails(ids: readonly (string | number)[], session?: NeteaseSession): Promise<SongDetailBatch> {

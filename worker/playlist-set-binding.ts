@@ -6,7 +6,8 @@ import type { Env } from "./env";
 import { getInstanceConfig } from "./instance-config";
 import { loadNeteaseSession } from "./session-store";
 import { snapshotForStateMachine } from "../lib/sync/snapshot";
-import { verifySnapshotAnomalies } from "./snapshot-verifier";
+import { verifySnapshotAnomalies, cloudVerificationClient } from "./snapshot-verifier";
+import { CLOUD_SOURCE_ID } from "../lib/monitoring-source";
 import { encodeSongUpserts, loadSongMetadata, propagateSourceSql, stagedSongMetadata, upsertSongsSql } from "../lib/sync/song-storage";
 
 export interface PlaylistSelection {
@@ -38,7 +39,8 @@ async function loadPending(env: Env, id: string): Promise<PendingSet> {
 export async function preparePlaylistBaseline(env: Env, bindingId: string, playlistId: string) {
   const pending = await loadPending(env, bindingId);
   const selections = pendingSelection(pending).playlists;
-  if (!selections.some((playlist) => playlist.id === playlistId))
+  const isCloud = playlistId === CLOUD_SOURCE_ID;
+  if (!isCloud && !selections.some((playlist) => playlist.id === playlistId))
     throw new Error("Playlist is not part of this selection");
   const existing = await env.DB.prepare(`SELECT playlist_id, song_json, state_json FROM pending_playlist_baselines
     WHERE binding_id = ? AND playlist_id = ?`).bind(bindingId, playlistId)
@@ -50,10 +52,12 @@ export async function preparePlaylistBaseline(env: Env, bindingId: string, playl
   const login = await client.getLoginStatus(stored.session);
   if (login.state !== "valid" || login.profile?.userId !== pending.account_uid)
     throw new Error("Pending NetEase session is not valid for the selected account");
-  const account = await client.getAccountSnapshot(stored.session, {
-    playlistId, expectedUserId: pending.account_uid, strictCompleteness: true,
-  });
-  if (account.playlist.trackCount <= 0)
+  const account = isCloud
+    ? await client.getCloudAccountSnapshot(stored.session, { expectedUserId: pending.account_uid })
+    : await client.getAccountSnapshot(stored.session, {
+      playlistId, expectedUserId: pending.account_uid, strictCompleteness: true,
+    });
+  if (!isCloud && account.playlist.trackCount <= 0)
     throw new Error("Empty playlists cannot establish a monitoring baseline");
   const config = await getInstanceConfig(env);
   const keepOriginals = config.accountUid === pending.account_uid && !pendingSelection(pending).freshBaseline;
@@ -63,7 +67,8 @@ export async function preparePlaylistBaseline(env: Env, bindingId: string, playl
   if (!prior.success) throw new Error(prior.error || "Could not read staged song originals");
   const state = { playlistSongs: [], songs: stagedSongMetadata(
     keepOriginals ? await loadSongMetadata(env.DB) : [], (prior.results ?? []).map((row) => row.song_json)) };
-  const verified = await verifySnapshotAnomalies(client, stored.session, account, state);
+  const verified = await verifySnapshotAnomalies(isCloud ? cloudVerificationClient(client, pending.account_uid) : client,
+    stored.session, account, state);
   const snapshot = assertCompleteSnapshot(snapshotForStateMachine(verified));
   const plan = planSnapshotSync(snapshot, state, false);
   const result = await env.DB.prepare(`INSERT INTO pending_playlist_baselines
@@ -113,6 +118,9 @@ async function activateSelection(env: Env, pending: PendingSet, selections: Play
   const currentPlaylists = replacingAccount || freshBaseline ? [] : await listMonitoredPlaylists(env.DB);
   const preserved = new Set(currentPlaylists.map((item) => item.id));
   const added = selections.filter((item) => !preserved.has(item.id));
+  if (freshBaseline) added.push({ id: CLOUD_SOURCE_ID, name: "网易云盘", coverUrl: null,
+    ownerUid: pending.account_uid, ownerName: pending.account_nickname, owned: true,
+    specialType: null, listOrder: 2147483647 });
   const stageResult = await env.DB.prepare(`SELECT playlist_id, song_json, state_json, verified_at
     FROM pending_playlist_baselines WHERE binding_id = ?`).bind(pending.id)
     .all<{ playlist_id: string; song_json: string; state_json: string; verified_at: string }>();
@@ -153,7 +161,7 @@ async function activateSelection(env: Env, pending: PendingSet, selections: Play
     statements.push(env.DB.prepare(`DELETE FROM monitored_playlists WHERE ${guard}`)
       .bind(nextVersion, pending.account_uid));
   } else {
-    statements.push(env.DB.prepare(`DELETE FROM monitored_playlists WHERE id NOT IN
+    statements.push(env.DB.prepare(`DELETE FROM monitored_playlists WHERE id <> '${CLOUD_SOURCE_ID}' AND id NOT IN
       (SELECT value FROM json_each(?)) AND ${guard}`)
       .bind(JSON.stringify(selections.map((item) => item.id)), nextVersion, pending.account_uid));
   }
@@ -170,6 +178,13 @@ async function activateSelection(env: Env, pending: PendingSet, selections: Play
         item.owned ? 1 : 0, item.specialType, item.listOrder, now,
         nextVersion, pending.account_uid));
   }
+  statements.push(env.DB.prepare(`INSERT INTO monitored_playlists
+    (id, name, owner_uid, owner_name, owned, list_order, baseline_established, bound_at)
+    SELECT ?, '网易云盘', ?, ?, 1, 2147483647, ?, ? WHERE ${guard}
+    ON CONFLICT(id) DO UPDATE SET owner_uid = excluded.owner_uid,
+      owner_name = excluded.owner_name, updated_at = CURRENT_TIMESTAMP`)
+    .bind(CLOUD_SOURCE_ID, pending.account_uid, pending.account_nickname, freshBaseline ? 1 : 0,
+      now, nextVersion, pending.account_uid));
   if (replacingAccount || freshBaseline) statements.push(env.DB.prepare(`DELETE FROM songs WHERE NOT EXISTS
     (SELECT 1 FROM playlist_song_states WHERE song_id = songs.id) AND ${guard}`)
     .bind(nextVersion, pending.account_uid));
@@ -239,6 +254,9 @@ export async function runPlaylistSetBinding(env: Env, bindingId: string, step: W
   const monitored = replacingAccount || freshBaseline ? [] : await listMonitoredPlaylists(env.DB);
   const preserved = new Set(monitored.map((item) => item.id));
   const added = selections.filter((item) => !preserved.has(item.id));
+  if (freshBaseline) added.push({ id: CLOUD_SOURCE_ID, name: "网易云盘", coverUrl: null,
+    ownerUid: pending.account_uid, ownerName: pending.account_nickname, owned: true,
+    specialType: null, listOrder: 2147483647 });
   if (!env.MUSIC_SYNC) throw new Error("MUSIC_SYNC workflow binding is unavailable");
   let claimed = false;
   for (let attempt = 0; attempt < 1440 && !claimed; attempt += 1) {

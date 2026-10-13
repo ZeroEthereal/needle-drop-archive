@@ -1,13 +1,14 @@
 import type { Env } from "./env";
 import { getInstanceConfig } from "./instance-config";
-import { listMonitoredPlaylists } from "../lib/sync/repository";
+import { listMonitoringSources } from "../lib/sync/repository";
+import { CLOUD_SOURCE_ID } from "../lib/monitoring-source";
 
 export type BatchTrigger = "manual" | "scheduled";
 
 export async function createSyncBatch(env: Env, trigger: BatchTrigger, playlistId?: string): Promise<string> {
   const config = await getInstanceConfig(env);
   if (config.status !== "ready" || !config.accountUid) throw new Error("INSTANCE_NOT_CONFIGURED");
-  const all = await listMonitoredPlaylists(env.DB);
+  const all = await listMonitoringSources(env.DB);
   const selected = playlistId ? all.filter((playlist) => playlist.id === playlistId) : all;
   if (!selected.length || (playlistId && !all.some((playlist) => playlist.id === playlistId)))
     throw new Error("PLAYLIST_NOT_MONITORED");
@@ -35,7 +36,7 @@ export async function createSyncBatch(env: Env, trigger: BatchTrigger, playlistI
         account_uid, playlist_count, workflow_id)
        VALUES (?, ?, ?, 'queued', ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`;
   const statements = [
-    env.DB.prepare(insertBatch).bind(id, trigger, playlistId ? "playlist" : "all", config.bindingVersion,
+    env.DB.prepare(insertBatch).bind(id, trigger, playlistId === CLOUD_SOURCE_ID ? "cloud" : playlistId ? "playlist" : "all", config.bindingVersion,
         config.accountUid, selected.length, `batch-${id}`),
     ...selected.map((playlist) => env.DB.prepare(`INSERT INTO sync_playlist_tasks
       (batch_id, playlist_id, list_order, playlist_name, status, binding_version)
@@ -130,7 +131,7 @@ export async function refreshScheduledBatchSelection(env: Env, id: string) {
   if (config.bindingVersion === batch.binding_version) return;
   if (batch.trigger !== "scheduled" || config.status !== "ready" || !config.accountUid)
     throw new Error("Playlist binding changed before batch execution");
-  const playlists = await listMonitoredPlaylists(env.DB);
+  const playlists = await listMonitoringSources(env.DB);
   if (!playlists.length) throw new Error("No monitored playlists remain for the scheduled batch");
   const statements = [
     env.DB.prepare(`UPDATE sync_batches SET binding_version = ?, account_uid = ?,

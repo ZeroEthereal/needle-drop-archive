@@ -4,7 +4,8 @@ import { commitPlaylistSyncPlan, loadPlaylistSyncState } from "../lib/sync/repos
 import type { Env } from "./env";
 import { getInstanceConfig } from "./instance-config";
 import { loadNeteaseSession, markNeteaseSessionStatus, storeNeteaseSessionIfBindingCurrent } from "./session-store";
-import { verifySnapshotAnomalies } from "./snapshot-verifier";
+import { verifySnapshotAnomalies, cloudVerificationClient } from "./snapshot-verifier";
+import { CLOUD_SOURCE_ID } from "../lib/monitoring-source";
 import { snapshotForStateMachine } from "../lib/sync/snapshot";
 
 const ACCOUNT_ERRORS = new Set(["authentication", "anonymous", "session_expired", "uid_mismatch", "risk_control"]);
@@ -47,14 +48,19 @@ export async function runMonitoredPlaylistSync(env: Env, batchId: string, playli
     const sessionCurrent = await storeNeteaseSessionIfBindingCurrent(env, stored.session,
       config.accountUid, task.binding_version, { validated: true, refreshed });
     if (!sessionCurrent) throw new Error("Playlist binding changed during sync");
-    await phase("fetch_playlist");
+    const isCloud = playlistId === CLOUD_SOURCE_ID;
+    await phase(isCloud ? "fetch_cloud" : "fetch_playlist");
     const state = await loadPlaylistSyncState(env.DB, playlistId);
-    const account = await client.getAccountSnapshot(stored.session, {
-      playlistId, expectedUserId: config.accountUid, strictCompleteness: true,
+    const options = {
+      expectedUserId: config.accountUid, strictCompleteness: true,
       onPlaylistRead: () => phase("inspect_songs"),
-    });
+    };
+    const account = isCloud
+      ? await client.getCloudAccountSnapshot(stored.session, options)
+      : await client.getAccountSnapshot(stored.session, { ...options, playlistId });
     await phase("compare_snapshot");
-    const verified = await verifySnapshotAnomalies(client, stored.session, account, state);
+    const verified = await verifySnapshotAnomalies(isCloud ? cloudVerificationClient(client, config.accountUid) : client,
+      stored.session, account, state);
     const plan = planSnapshotSync(snapshotForStateMachine(verified), state, playlist.baseline_established === 1);
     await phase("persist_snapshot");
     await commitPlaylistSyncPlan(env.DB, playlistId, plan, batchId, task.binding_version);
