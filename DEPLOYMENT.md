@@ -147,9 +147,27 @@ npm run deploy:full
 
 Worker 代码不得把网易 Cookie、Access JWT、Secret 或其他身份凭据写入 `console`。当前自定义运行日志只记录网易请求失败的端点、分类、状态和错误摘要。
 
+## 使用受保护的自定义域名
+
+已拥有并托管在 Cloudflare 的域名可以直接绑定当前 Worker，无需更换 D1、Workflow、账号或加密 Secret。在未占用的子域名上配置 Custom Domain，不覆盖其他网站的 DNS 记录。
+
+先把完整子域名加入现有 Cloudflare Access 应用的公共主机名目标，路径留空，继续使用原来的精确邮箱 Allow 规则。复用同一应用时，`ACCESS_AUD` 不变。确认保护目标保存后，在部署使用的 `wrangler.private.jsonc` 中添加：
+
+```json
+"routes": [
+  { "pattern": "archive.example.com", "custom_domain": true }
+]
+```
+
+使用 `npm run deploy:full` 重新生成并发布包含该路由的构建。Cloudflare 会建立子域名的 DNS 记录和证书。后续更新继续使用包含 `routes` 的私有配置；若重新生成私有配置，也要保留这些路由。
+
+验收时同时检查未登录请求会进入 Access 登录页，以及登录后首页、歌单和状态接口能读取真实数据。自定义域名与 `workers.dev` 可以同时保留；两个公开入口都必须受到 Access 保护。
+
+如果浏览器显示 1101，而当前 Worker 的实时和历史日志都没有对应请求，先对照本机 DNS 与公开 DNS 的解析结果，并检查代理或中转路径。错误页本身不能证明异常发生在项目代码中。Zero Trust 套餐提示也应独立核对，不能据此认定套餐开通会解决该错误。
+
 ## 首次使用验收
 
-1. 打开 Worker 的 `workers.dev` 地址；
+1. 打开 Worker 已配置并受 Access 保护的访问地址；
 2. 使用允许邮箱接收 Access 验证码；
 3. 进入“同步状态”，点击“连接网易云”；
 4. 用网易云音乐 App 扫码并确认；
