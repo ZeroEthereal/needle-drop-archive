@@ -26,6 +26,7 @@ import { createSyncBatch, latestBatchStatus, latestCompletedBatch } from "./sync
 import { listSyncHistory } from "./sync-history";
 import type { PlaylistSelection } from "./playlist-set-binding";
 import { CLOUD_SOURCE_ID } from "../lib/monitoring-source";
+import { databaseDailyLimit, isDatabaseDailyLimit } from "../lib/database-limit";
 
 const QR_CREATE_COOLDOWN_MS = 5_000;
 
@@ -568,6 +569,13 @@ app.notFound(() => jsonError(404, "API_NOT_FOUND", "接口不存在。"));
 app.onError((error) => {
   if (error instanceof ApiError) return jsonError(error.status, error.code, error.message);
   if (error instanceof AccessDeniedError) return jsonError(error.status, "ACCESS_DENIED", error.message);
+  if (isDatabaseDailyLimit(error)) {
+    const { retryAfter, ...detail } = databaseDailyLimit();
+    return Response.json({ error: detail, ...detail }, {
+      status: 503,
+      headers: { "cache-control": "no-store", "retry-after": String(retryAfter) },
+    });
+  }
   if (error instanceof NeteaseError) {
     const cause = error.cause;
     console.warn(JSON.stringify({

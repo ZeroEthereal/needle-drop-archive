@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { SyncHistoryRecord } from "../ui-types";
+import { requestJson, RequestJsonError } from "../api-client";
+import { DATABASE_DAILY_LIMIT_CODE } from "../../lib/database-limit";
 
 interface HistoryPage {
   items: SyncHistoryRecord[];
@@ -18,7 +20,7 @@ function historyTime(value: string): string {
   }).format(new Date(utc));
 }
 
-export default function SyncHistory() {
+export default function SyncHistory({ onDatabaseLimit }: { onDatabaseLimit: (error: unknown) => void }) {
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState<HistoryPage>();
   const [loading, setLoading] = useState(true);
@@ -39,12 +41,8 @@ export default function SyncHistory() {
       controller = new AbortController();
       setLoading(true);
       try {
-        const response = await fetch(`/api/sync/history?offset=${offset}`, {
-          credentials: "same-origin", headers: { Accept: "application/json" },
-          cache: "no-store", signal: controller.signal,
-        });
-        if (!response.ok) throw new Error("History unavailable");
-        const next = await response.json() as HistoryPage;
+        const next = await requestJson([{ url: `/api/sync/history?offset=${offset}`,
+          init: { cache: "no-store", signal: controller.signal } }]) as HistoryPage;
         if (request !== requests.value) return;
         if (offset > 0 && offset >= next.total) {
           setOffset(Math.max(0, Math.ceil(next.total / 10) - 1) * 10);
@@ -52,8 +50,11 @@ export default function SyncHistory() {
         }
         setPage(next);
         setError(false);
-      } catch {
-        if (request === requests.value) setError(true);
+      } catch (error) {
+        if (request === requests.value) {
+          setError(true);
+          if (error instanceof RequestJsonError && error.code === DATABASE_DAILY_LIMIT_CODE) onDatabaseLimit(error);
+        }
       } finally {
         checking = false;
         if (request === requests.value) setLoading(false);
@@ -79,7 +80,7 @@ export default function SyncHistory() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocus);
     };
-  }, [offset, retry]);
+  }, [offset, retry, onDatabaseLimit]);
 
   const changePage = (nextOffset: number) => {
     ++sequence.current.value;

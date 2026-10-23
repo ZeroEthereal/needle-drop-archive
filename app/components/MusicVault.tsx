@@ -1,6 +1,8 @@
 "use client";
 
 import SyncHistory from "./SyncHistory";
+import { requestJson, RequestJsonError, type RequestOption } from "../api-client";
+import { DATABASE_DAILY_LIMIT_CODE } from "../../lib/database-limit";
 import { CLOUD_SOURCE_ID } from "../../lib/monitoring-source";
 import { formatSongDuration, normalizeSongTextList, songSubtitle, validSongDuration } from "../../lib/song-display";
 
@@ -36,7 +38,6 @@ import type {
 } from "../ui-types";
 
 type UnknownRecord = Record<string, unknown>;
-type RequestOption = { url: string; init?: RequestInit };
 type RecoveryFilter = "all" | RecoveryKind;
 type LibraryFilter = "all" | "playable" | RecoveryKind;
 const anomalyLabels: Record<RecoveryKind, string> = { grey: "变灰", missing: "消失", mismatch: "错配" };
@@ -265,64 +266,6 @@ function normalizeStatus(value: unknown): SyncStatus {
   };
 }
 
-async function requestJson(options: RequestOption[]): Promise<unknown> {
-  let lastError: unknown = new Error("接口暂不可用");
-  for (const option of options) {
-    try {
-      const response = await fetch(option.url, {
-        ...option.init,
-        credentials: "same-origin",
-        headers: {
-          Accept: "application/json",
-          ...(option.init?.body ? { "Content-Type": "application/json" } : {}),
-          ...(option.init?.method && option.init.method.toUpperCase() !== "GET"
-            ? { "X-Requested-With": "ncm-archive" }
-            : {}),
-          ...option.init?.headers,
-        },
-      });
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        let message = text;
-        let code: string | undefined;
-        try {
-          const parsed = JSON.parse(text) as unknown;
-          if (isRecord(parsed)) {
-            const error = isRecord(parsed.error) ? parsed.error : undefined;
-            message = firstString(error?.message, parsed.message) ?? text;
-            code = firstString(error?.code, parsed.code);
-          }
-        } catch {
-          // Non-JSON errors are still useful (for example, a Cloudflare Access response).
-        }
-        lastError = new RequestJsonError(
-          message || `请求失败（${response.status}）`,
-          response.status,
-          code,
-        );
-        continue;
-      }
-      if (response.status === 204) return {};
-      const text = await response.text();
-      return text ? JSON.parse(text) : {};
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError;
-}
-
-class RequestJsonError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly code?: string,
-  ) {
-    super(message);
-    this.name = "RequestJsonError";
-  }
-}
-
 function useDebounced<T>(value: T, delay = 280): T {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
@@ -523,11 +466,13 @@ function EmptyState({
   title,
   body,
   action,
+  eyebrow,
 }: {
   unavailable?: boolean;
   title: string;
   body: string;
   action?: ReactNode;
+  eyebrow?: string;
 }) {
   return (
     <section className="empty-state">
@@ -535,7 +480,7 @@ function EmptyState({
         <span />
         <i />
       </div>
-      <p className="micro-label">{unavailable ? "WAITING FOR SIGNAL" : "ALL QUIET"}</p>
+      <p className="micro-label">{eyebrow ?? (unavailable ? "WAITING FOR SIGNAL" : "ALL QUIET")}</p>
       <h3>{title}</h3>
       <p>{body}</p>
       {action ? <div className="empty-actions">{action}</div> : null}
@@ -1040,6 +985,7 @@ function SyncView({
   onLogin,
   onReauthorize,
   onRebind,
+  onDatabaseLimit,
 }: {
   status?: SyncStatus;
   loadState: LoadState;
@@ -1049,6 +995,7 @@ function SyncView({
   onLogin: () => void;
   onReauthorize: () => void;
   onRebind: () => void;
+  onDatabaseLimit: (error: unknown) => void;
 }) {
   const currentPhase = phaseIndex(status?.phase);
   const isActive = status?.batch?.status === "running" || status?.batch?.status === "queued";
@@ -1122,7 +1069,7 @@ function SyncView({
             {status.error ? <div className="sync-error"><strong>{status.sessionStatus === "expired" ? "需要重新授权网易云" : "同步没有完成"}</strong><p>{status.error}</p></div> : null}
           </section>
 
-          <SyncHistory key={`${status.bindingVersion ?? ""}:${status.completedBatch?.id ?? ""}`} />
+          <SyncHistory key={`${status.bindingVersion ?? ""}:${status.completedBatch?.id ?? ""}`} onDatabaseLimit={onDatabaseLimit} />
 
           <section className="connection-grid">
             <article className="connection-card glass-panel">
@@ -1337,6 +1284,7 @@ export function MusicVault() {
   const [status, setStatus] = useState<SyncStatus>();
   const [statusState, setStatusState] = useState<LoadState>("loading");
   const [statusError, setStatusError] = useState<RequestJsonError>();
+  const [databaseLimit, setDatabaseLimit] = useState<RequestJsonError>();
   const [syncing, setSyncing] = useState(false);
   const [awaitingTaskStatus, setAwaitingTaskStatus] = useState(false);
   const [completingSongId, setCompletingSongId] = useState<string>();
@@ -1361,6 +1309,7 @@ export function MusicVault() {
   const completedBatchIds = useRef(new Set<string>());
   const initialStatusLoaded = useRef(false);
   const statusRequestInFlight = useRef(false);
+  const databaseLimitVersion = useRef(0);
   const taskStatusVersion = useRef(0);
   const recoverySearch = useDebounced(recoveryQuery);
   const likesSearch = useDebounced(likesQuery);
@@ -1368,6 +1317,26 @@ export function MusicVault() {
   const notify = useCallback((message: string, tone: Toast["tone"] = "info") => {
     setToast({ message, tone });
   }, []);
+
+  const reportDatabaseLimit = useCallback((error: unknown) => {
+    if (!(error instanceof RequestJsonError) || error.code !== DATABASE_DAILY_LIMIT_CODE) return;
+    databaseLimitVersion.current += 1;
+    setDatabaseLimit(error);
+    setAwaitingTaskStatus(false);
+    setQrOpen(false);
+    setPlaylistOpen(false);
+    setFreshConfirm(false);
+    setBatchSummary(undefined);
+  }, []);
+
+  const requestApi = useCallback(async (options: RequestOption[]) => {
+    try {
+      return await requestJson(options);
+    } catch (error) {
+      reportDatabaseLimit(error);
+      throw error;
+    }
+  }, [reportDatabaseLimit]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1423,7 +1392,7 @@ export function MusicVault() {
     if (recoverySearch.trim()) params.set("query", recoverySearch.trim());
     if (cursor) params.set("cursor", cursor);
     try {
-      const raw = await requestJson([{ url: `/api/recovery?${params}` }]);
+      const raw = await requestApi([{ url: `/api/recovery?${params}` }]);
       if (sequence !== recoveryRequest.current) return;
       const page = normalizePage(raw, normalizeRecovery);
       setRecoveryItems((current) => {
@@ -1447,7 +1416,7 @@ export function MusicVault() {
     } finally {
       setLoadingMoreRecovery(false);
     }
-  }, [notify, recoveryFilter, recoveryPlaylistFilter, recoverySearch]);
+  }, [notify, recoveryFilter, recoveryPlaylistFilter, recoverySearch, requestApi]);
 
   const loadLikes = useCallback(async (cursor?: string, append = false) => {
     if (view !== "likes" && view !== "cloud") return;
@@ -1462,7 +1431,7 @@ export function MusicVault() {
     if (likesSearch.trim()) params.set("query", likesSearch.trim());
     if (cursor) params.set("cursor", cursor);
     try {
-      const raw = await requestJson([{ url: view === "cloud" ? `/api/cloud?${params}` : `/api/likes?${params}` }]);
+      const raw = await requestApi([{ url: view === "cloud" ? `/api/cloud?${params}` : `/api/likes?${params}` }]);
       if (sequence !== likesRequest.current) return;
       const page = normalizePage(raw, (item) => normalizeSong(item));
       setSongs((current) => {
@@ -1484,15 +1453,16 @@ export function MusicVault() {
     } finally {
       if (sequence === likesRequest.current) setLoadingMore(false);
     }
-  }, [likesQuery, likesSearch, likesFilter, notify, selectedPlaylistId, view]);
+  }, [likesQuery, likesSearch, likesFilter, notify, selectedPlaylistId, view, requestApi]);
 
   const loadStatus = useCallback(async (showLoading = false) => {
     if (document.visibilityState !== "visible" || statusRequestInFlight.current) return;
     statusRequestInFlight.current = true;
     const version = taskStatusVersion.current;
+    const limitVersion = databaseLimitVersion.current;
     if (showLoading) setStatusState("loading");
     try {
-      const raw = await requestJson([{ url: "/api/sync/status" }]);
+      const raw = await requestApi([{ url: "/api/sync/status" }]);
       // A response started before a new task cannot settle that task's status.
       if (version !== taskStatusVersion.current) return;
       const next = normalizeStatus(raw);
@@ -1542,6 +1512,8 @@ export function MusicVault() {
       }
       initialStatusLoaded.current = true;
       setStatusError(undefined);
+      // An older successful request must not dismiss a newer quota failure.
+      if (limitVersion === databaseLimitVersion.current) setDatabaseLimit(undefined);
       setStatusState("ready");
     } catch (error) {
       if (version !== taskStatusVersion.current) return;
@@ -1551,7 +1523,16 @@ export function MusicVault() {
     } finally {
       statusRequestInFlight.current = false;
     }
-  }, []);
+  }, [requestApi]);
+
+  const wasDatabaseLimited = useRef(false);
+  useEffect(() => {
+    if (wasDatabaseLimited.current && !databaseLimit) {
+      void loadRecovery(undefined, false);
+      void loadLikes(undefined, false);
+    }
+    wasDatabaseLimited.current = Boolean(databaseLimit);
+  }, [databaseLimit, loadLikes, loadRecovery]);
 
   useEffect(() => {
     if (!navigationReady) return;
@@ -1601,11 +1582,11 @@ export function MusicVault() {
 
   useEffect(() => {
     const bindingActive = status?.binding?.state === "preparing" || status?.binding?.state === "running";
-    if (backgrounded || (status?.state !== "running" && status?.state !== "queued"
+    if (backgrounded || databaseLimit || (status?.state !== "running" && status?.state !== "queued"
       && !bindingActive && !awaitingTaskStatus)) return;
     const timer = window.setInterval(() => void loadStatus(false), 2000);
     return () => window.clearInterval(timer);
-  }, [awaitingTaskStatus, backgrounded, loadStatus, status?.binding?.state, status?.state]);
+  }, [awaitingTaskStatus, backgrounded, databaseLimit, loadStatus, status?.binding?.state, status?.state]);
 
   const loadMoreLikes = useCallback(() => {
     if (!likesCursor || loadingMore) return;
@@ -1642,7 +1623,7 @@ export function MusicVault() {
     if (completingSongId) return;
     setCompletingSongId(item.song.id);
     try {
-      const raw = await requestJson([
+      const raw = await requestApi([
         { url: `/api/recovery/${encodeURIComponent(item.song.id)}/complete`, init: { method: "POST" } },
       ]);
       const result = raw;
@@ -1685,7 +1666,7 @@ export function MusicVault() {
     if (syncing) return;
     setSyncing(true);
     try {
-      await requestJson([{ url: "/api/sync", init: { method: "POST",
+      await requestApi([{ url: "/api/sync", init: { method: "POST",
         body: JSON.stringify(playlistId === CLOUD_SOURCE_ID ? { source: "cloud" } : playlistId ? { playlistId } : {}) } }]);
       taskStatusVersion.current += 1;
       setAwaitingTaskStatus(true);
@@ -1701,11 +1682,11 @@ export function MusicVault() {
 
   const cancelFlow = useCallback(async (flowId?: string) => {
     if (!flowId) return;
-    await requestJson([{
+    await requestApi([{
       url: `/api/netease/auth-flows/${encodeURIComponent(flowId)}/cancel`,
       init: { method: "POST", body: "{}" },
     }]).catch(() => undefined);
-  }, []);
+  }, [requestApi]);
 
   const loadPlaylists = useCallback(async (flowId?: string) => {
     setPlaylistOpen(true);
@@ -1717,7 +1698,7 @@ export function MusicVault() {
       const items = new Map<string, PlaylistChoice>();
       let offset = 0;
       for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
-        const raw = await requestJson([{
+        const raw = await requestApi([{
           url: "/api/netease/playlists",
           init: { method: "POST", body: JSON.stringify({ flowId, offset, limit: 100 }) },
         }]);
@@ -1762,13 +1743,13 @@ export function MusicVault() {
     } finally {
       setPlaylistLoading(false);
     }
-  }, [notify, status]);
+  }, [notify, status, requestApi]);
 
   const createQr = useCallback(async (mode: "initial" | "reauthorize" = qrMode) => {
     setQrMode(mode);
     setQrLogin({ flowId: "", state: "creating" });
     try {
-      const raw = await requestJson([
+      const raw = await requestApi([
         { url: "/api/netease/auth-flows", init: { method: "POST", body: JSON.stringify({ mode }) } },
       ]);
       const record = isRecord(raw) ? raw : {};
@@ -1790,7 +1771,7 @@ export function MusicVault() {
         message: error instanceof Error ? error.message : "暂时无法生成二维码",
       });
     }
-  }, [qrMode]);
+  }, [qrMode, requestApi]);
 
   const openQr = (mode: "initial" | "reauthorize" = "initial") => {
     setQrOpen(true);
@@ -1821,7 +1802,7 @@ export function MusicVault() {
       if (document.visibilityState !== "visible" || checking) return;
       checking = true;
       try {
-        const raw = await requestJson([
+        const raw = await requestApi([
           { url: `/api/netease/auth-flows/${encodeURIComponent(qrLogin.flowId)}/poll`, init: { method: "POST", body: "{}" } },
         ]);
         const record = isRecord(raw) ? raw : {};
@@ -1840,7 +1821,7 @@ export function MusicVault() {
     const timer = window.setInterval(() => void check(), 2000);
     void check();
     return () => window.clearInterval(timer);
-  }, [backgrounded, qrLogin?.flowId, qrLogin?.state, qrOpen]);
+  }, [backgrounded, qrLogin?.flowId, qrLogin?.state, qrOpen, requestApi]);
 
   const togglePlaylistChoice = (id: string) => setSelectedPlaylistIds((current) =>
     current.includes(id) ? current.filter((item) => item !== id) : current.length >= 20 ? current : [...current, id]);
@@ -1856,7 +1837,7 @@ export function MusicVault() {
     setFreshConfirm(false);
     setPlaylistBinding(true);
     try {
-      await requestJson([{
+      await requestApi([{
         url: "/api/playlist-binding",
         init: { method: "POST", body: JSON.stringify({ flowId: playlistFlowId,
           playlistIds: selectedPlaylistIds, confirmedRemoval,
@@ -1963,15 +1944,15 @@ export function MusicVault() {
             ))}
           </div>
         </div>
-        <div className="playlist-stamp"><span>PLAYLISTS</span><strong>{status?.playlists?.length ?? 0} 个监控中</strong></div>
+        <div className="playlist-stamp"><span>PLAYLISTS</span><strong>{databaseLimit && !status ? "暂不可查询" : `${status?.playlists?.length ?? 0} 个监控中`}</strong></div>
       </aside>
 
       <main>
         <header className="topbar">
           <div className="mobile-brand"><span className="brand-disc"><i /><b /></span><strong>拾针</strong></div>
-          <div className={`global-health state-${status?.state ?? "unknown"}`}>
+          <div className={`global-health state-${databaseLimit ? "failed" : status?.state ?? "unknown"}`}>
             <span className="live-dot" />
-            <p><small>SYSTEM STATUS</small>{syncLabel(status)}</p>
+            <p><small>SYSTEM STATUS</small>{databaseLimit ? "今日数据库额度已用完" : syncLabel(status)}</p>
           </div>
           <div className="topbar-meta">
             <p><small>LAST SYNC</small>{status?.lastSuccessAt ? formatDateTime(status.lastSuccessAt) : "等待首次同步"}</p>
@@ -1980,6 +1961,11 @@ export function MusicVault() {
         </header>
 
         <div className="content-stage">
+          {databaseLimit ? <div role="alert">
+            <EmptyState unavailable eyebrow="DAILY LIMIT REACHED" title="今日数据库免费额度已用完" body={databaseLimit.message}
+              action={<button type="button" className="primary-button" disabled={statusState === "loading"}
+                onClick={() => void loadStatus(true)}>{statusState === "loading" ? "正在检查" : "重新检查"}</button>} />
+          </div> : <>
           {view === "recovery" ? (
             <RecoveryView
               status={status}
@@ -2040,8 +2026,10 @@ export function MusicVault() {
               onLogin={() => openQr("initial")}
               onReauthorize={() => openQr("reauthorize")}
               onRebind={() => void loadPlaylists()}
+              onDatabaseLimit={reportDatabaseLimit}
             />
           ) : null}
+          </>}
         </div>
       </main>
 
