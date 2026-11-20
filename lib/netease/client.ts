@@ -660,7 +660,7 @@ export class NeteaseClient {
     const endpoint = "/api/v1/cloud/get/byids";
     const output: CloudSong[] = [];
     for (const batch of chunks(normalizedIds, 200)) {
-      const { body } = await this.request(endpoint, { songIds: batch.join(","), timestamp: this.now() }, session);
+      const { body } = await this.request(endpoint, { songIds: JSON.stringify(batch), timestamp: this.now() }, session);
       assertApiSuccess(body, endpoint);
       if (!Array.isArray(body.data)) {
         throw new NeteaseError("invalid_response", "NetEase cloud detail response is missing data", { endpoint });
