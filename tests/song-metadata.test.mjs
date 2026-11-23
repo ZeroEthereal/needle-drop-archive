@@ -34,7 +34,7 @@ test("cloud details supply metadata when standard detail is missing", async () =
   assert.deepEqual(calls, ["/api/v3/song/detail", "/api/v1/cloud/get/byids"]);
 });
 
-test("metadata recheck fetches fresh playlist embedded detail instead of reusing the first snapshot", async () => {
+test("metadata lookup by playlist ID can fetch embedded detail as a fallback", async () => {
   const { client, calls } = clientFor({ embedded: [rawSong("Fresh embedded")] });
   const result = await client.getSongMetadata(["123"], session, "1000");
   assert.equal(result.songs[0].song.title, "Fresh embedded");
@@ -56,16 +56,18 @@ for (const source of ["standard", "cloud", "embedded"]) test(`${source} detail k
   assert.equal(item.durationMs, 326999);
 });
 
-test("multiple staged baselines share the first identity and retain preceding mismatch evidence through grey", () => {
-  const input = (title, playable = true) => ({ complete: true, observedAt: "2026-10-01T00:00:00Z",
+test("multiple staged baselines share the first identity and duration and retain mismatch evidence through grey", () => {
+  const input = (title, durationMs, playable = true) => ({ complete: true, observedAt: "2026-10-01T00:00:00Z",
     declaredTrackCount: 1, songs: [{ id: "123", title, artists: ["Singer"], album: null,
-      coverUrl: null, accountPlayable: playable }] });
-  const first = planSnapshotSync(input("Original"), { playlistSongs: [] }, false);
+      coverUrl: null, accountPlayable: playable, durationMs }] });
+  const first = planSnapshotSync(input("Original", 180001), { playlistSongs: [] }, false);
   const originals = stagedSongMetadata([], [encodeSongUpserts(first.songUpserts)]);
-  const wrong = planSnapshotSync(input("Wrong"), { playlistSongs: [], songs: originals }, false);
+  const wrong = planSnapshotSync(input("Wrong", 180002), { playlistSongs: [], songs: originals }, false);
   assert.equal(wrong.playlistSongUpserts[0].anomalyType, "mismatch");
   const shared = stagedSongMetadata([], [encodeSongUpserts(first.songUpserts), encodeSongUpserts(wrong.songUpserts)]);
-  const grey = planSnapshotSync(input("Do not record", false), { playlistSongs: [], songs: shared }, false);
+  const grey = planSnapshotSync(input("Do not record", 180003, false), { playlistSongs: [], songs: shared }, false);
   assert.equal(grey.songUpserts[0].title, "Original"); assert.equal(grey.songUpserts[0].observedTitle, "Wrong");
   assert.equal(grey.playlistSongUpserts[0].anomalyType, "grey");
+  assert.equal(grey.songUpserts[0].baselineDurationMs, 180001);
+  assert.equal(grey.songUpserts[0].observedDurationMs, 180002);
 });

@@ -1,193 +1,88 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-import { createNeteaseSession, NeteaseError } from "../lib/netease/index.ts";
-import { verifySnapshotAnomalies } from "../worker/snapshot-verifier.ts";
+import { createNeteaseSession, NeteaseClient } from "../lib/netease/index.ts";
+import { commitPlaylistSyncPlan, loadPlaylistSyncState } from "../lib/sync/repository.ts";
+import { snapshotForStateMachine } from "../lib/sync/snapshot.ts";
+import { planSnapshotSync } from "../lib/sync/state-machine.ts";
+import { setupPlaylists, TestD1 } from "./helpers/d1.mjs";
 
 const session = createNeteaseSession("MUSIC_U=fake-test-session");
+const song = (id, dt) => ({ id, name: `Song ${id}`, ar: [{ id: 1, name: "Artist" }], dt });
+const playable = (id) => ({ id, code: 200, url: "https://example.com/audio" });
+const observe = (opts = {}) => {
+  const { ids = [2, 3], trackCount = ids.length, details = [song(2, 180001), song(3, 180002)],
+    playback = [{ id: 2, code: 404, url: null }, playable(3)], cloudCount = ids.length } = opts;
+  const calls = [];
+  const client = new NeteaseClient({ retryCount: 0, fetch: async (url) => {
+    const path = new URL(url).pathname;
+    calls.push(path);
+    const replies = {
+      "/api/nuser/account/get": { profile: { userId: 42 } },
+      "/api/v6/playlist/detail": { playlist: { id: 1000, userId: 42, trackCount,
+        trackIds: ids.map((id) => ({ id })) } },
+      "/api/v1/cloud/get": { count: cloudCount, hasMore: false, data: ids.map((id) => ({ songId: id })) },
+      "/api/v3/song/detail": { songs: details },
+      "/api/v1/cloud/get/byids": { data: [] },
+      "/api/song/enhance/player/url": { data: playback },
+    };
+    assert.ok(replies[path], `Unexpected request: ${path}`);
+    return Response.json({ code: 200, ...replies[path] });
+  } });
+  return { client, calls };
+};
 
-const playlist = (trackIds) => ({
-  id: "1000",
-  name: "Test Playlist",
-  userId: "42",
-  ownerName: "Owner",
-  coverUrl: null,
-  privacy: 0,
-  trackCount: trackIds.length,
-  cloudTrackCount: 0,
-  trackIds,
-  embeddedTracks: [],
-  updateTime: null,
-});
-
-const account = (songs) => ({
-  capturedAt: "2026-08-17T01:00:00.000Z",
-  userId: "42",
-  playlist: playlist(songs.map((song) => song.id)),
-  trackIds: songs.map((song) => song.id),
-  cloudSongs: [],
-  songs: songs.map((song) => ({
-    id: song.id,
-    song: {
-      id: song.id,
-      title: `Song ${song.id}`,
-      artists: [{ id: "artist", name: "Artist" }],
-      album: { id: "album", name: "Album", coverUrl: null },
-      durationMs: null,
-      neteaseUrl: `https://music.163.com/#/song?id=${song.id}`,
-    },
-    playable: song.playable,
-    playbackCode: song.playable ? 200 : 404,
-    playbackReason: song.playable ? "playable" : "no_url",
-    inCloud: false,
-  })),
-  warnings: [],
-});
-
-const managed = (songId, bucket = "normal", anomalyType = null) => ({
-  songId,
-  bucket,
-  anomalyType,
-  firstSeenAt: "2026-08-16T01:00:00.000Z",
-  lastSeenAt: "2026-08-16T01:00:00.000Z",
-  lastPlayableAt: "2026-08-16T01:00:00.000Z",
-  confirmedAt: bucket === "anomaly" ? "2026-08-16T01:00:00.000Z" : null,
-  createdAt: "2026-08-16T01:00:00.000Z",
-  updatedAt: "2026-08-16T01:00:00.000Z",
-});
-
-function fakeClient({ secondTrackIds = [], availability = [], metadata = [], playlistError, playbackError, metadataError } = {}) {
-  return {
-    playlistCalls: 0,
-    playbackCalls: 0,
-    metadataCalls: 0,
-    async getSongMetadata() {
-      this.metadataCalls += 1;
-      if (metadataError) throw metadataError;
-      return { songs: metadata };
-    },
-    async getPlaylistDetail() {
-      this.playlistCalls += 1;
-      if (playlistError) throw playlistError;
-      return playlist(secondTrackIds);
-    },
-    async getPlaybackAvailability() {
-      this.playbackCalls += 1;
-      if (playbackError) throw playbackError;
-      return availability;
-    },
-  };
+function seededDb(t) {
+  const db = new TestD1();
+  t.after(() => db.close());
+  setupPlaylists(db, ["1000"]);
+  for (const id of [1, 2, 3]) {
+    db.sqlite.prepare(`INSERT INTO songs (id,title,artists,netease_url,duration_ms,baseline_duration_ms)
+      VALUES (?,?,'["Artist"]','url',180001,180001)`).run(String(id), `Song ${id}`);
+    db.sqlite.prepare(`INSERT INTO playlist_song_states (playlist_id,song_id,first_seen_at,last_seen_at,last_confirmed_at)
+      VALUES ('1000',?,'2026-08-16','2026-08-16','2026-08-16')`).run(String(id));
+  }
+  db.sqlite.exec(`INSERT INTO sync_batches (id,trigger,scope,status,binding_version,account_uid,playlist_count)
+    VALUES ('batch','manual','playlist','running',1,'42',1);
+    INSERT INTO sync_playlist_tasks (batch_id,playlist_id,list_order,playlist_name,status,binding_version)
+    VALUES ('batch','1000',0,'Playlist','running',1)`);
+  return db;
 }
 
-test("a stable missing observation is accepted after a second complete membership read", async () => {
-  const client = fakeClient({ secondTrackIds: ["2"] });
-  const snapshot = account([{ id: "2", playable: true }]);
-  await verifySnapshotAnomalies(client, session, snapshot, {
-    playlistSongs: [managed("1"), managed("2")],
+async function sync(db, client) {
+  const state = await loadPlaylistSyncState(db, "1000");
+  const account = await client.getAccountSnapshot(session, { playlistId: "1000", expectedUserId: "42" });
+  const plan = planSnapshotSync(snapshotForStateMachine(account), state, true);
+  await commitPlaylistSyncPlan(db, "1000", plan, "batch", 1);
+}
+
+test("one complete snapshot commits missing, grey and mismatch without further upstream reads", async (t) => {
+  const db = seededDb(t);
+  const { client, calls } = observe();
+  await sync(db, client);
+  assert.deepEqual(calls, ["/api/nuser/account/get", "/api/v6/playlist/detail",
+    "/api/v3/song/detail", "/api/song/enhance/player/url"]);
+  const states = db.sqlite.prepare("SELECT anomaly_type FROM playlist_song_states ORDER BY song_id").all();
+  assert.deepEqual(states.map((row) => row.anomaly_type), ["missing", "grey", "mismatch"]);
+  assert.equal(db.sqlite.prepare("SELECT status FROM sync_playlist_tasks").get().status, "success");
+});
+
+for (const [label, options] of [["members", { trackCount: 3 }], ["metadata", { details: [song(3, 180002)] }],
+  ["playback", { playback: [playable(3)] }]]) {
+  test(`incomplete snapshot ${label} leaves all prior song states untouched`, async (t) => {
+    const db = seededDb(t);
+    const { client } = observe(options);
+    await assert.rejects(sync(db, client), (error) => error.kind === "incomplete_response");
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM playlist_song_states WHERE bucket = 'normal'").get().count, 3);
+    assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM songs WHERE observed_duration_ms IS NOT NULL").get().count, 0);
   });
-  assert.equal(client.playlistCalls, 1);
-  assert.equal(client.playbackCalls, 0);
-});
+}
 
-test("a changing playlist aborts verification before state commit", async () => {
-  const client = fakeClient({ secondTrackIds: ["1", "2"] });
-  const snapshot = account([{ id: "2", playable: true }]);
-  await assert.rejects(
-    verifySnapshotAnomalies(client, session, snapshot, {
-      playlistSongs: [managed("1"), managed("2")],
-    }),
-    (error) => error instanceof NeteaseError && error.kind === "incomplete_response",
-  );
-});
-
-test("a second unplayable result confirms a grey observation", async () => {
-  const client = fakeClient({
-    availability: [{ id: "1", playable: false, code: 404, reason: "no_url", freeTrial: false }],
-  });
-  const snapshot = account([{ id: "1", playable: false }]);
-  const verified = await verifySnapshotAnomalies(client, session, snapshot, {
-    playlistSongs: [managed("1")],
-  });
-  assert.equal(verified.songs[0].playable, false);
-  assert.equal(client.playbackCalls, 1);
-});
-
-test("a playable recheck suppresses a transient grey observation", async () => {
-  const client = fakeClient({
-    availability: [{ id: "1", playable: true, code: 200, reason: "playable", freeTrial: false }],
-  });
-  const snapshot = account([{ id: "1", playable: false }]);
-  const verified = await verifySnapshotAnomalies(client, session, snapshot, {
-    playlistSongs: [managed("1")],
-  });
-  assert.equal(verified.songs[0].playable, true);
-  assert.equal(verified.songs[0].playbackCode, 200);
-});
-
-test("verification failures are propagated instead of producing partial state", async () => {
-  const failure = new NeteaseError("network", "temporary failure");
-  const client = fakeClient({ playbackError: failure });
-  await assert.rejects(
-    verifySnapshotAnomalies(
-      client,
-      session,
-      account([{ id: "1", playable: false }]),
-      { playlistSongs: [managed("1")] },
-    ),
-    failure,
-  );
-});
-
-test("no extra upstream request is made when no new anomaly is suspected", async () => {
-  const client = fakeClient();
-  const snapshot = account([{ id: "1", playable: true }]);
-  await verifySnapshotAnomalies(client, session, snapshot, {
-    playlistSongs: [managed("1")],
-  });
-  assert.equal(client.playlistCalls, 0);
-  assert.equal(client.playbackCalls, 0);
-});
-
-const identityState = (observedTitle = null) => ({ playlistSongs: [managed("1")], songs: [{
-  id: "1", title: "Original", artists: ["Artist"], album: "Album", coverUrl: null,
-  observedTitle, observedArtists: observedTitle === null ? null : ["Artist"],
-}] });
-
-test("stable changed metadata is rechecked in the same sync", async () => {
-  const snapshot = account([{ id: "1", playable: true }]);
-  const client = fakeClient({ metadata: snapshot.songs });
-  assert.deepEqual(await verifySnapshotAnomalies(client, session, snapshot, identityState()), snapshot);
-  assert.equal(client.metadataCalls, 1);
-});
-
-test("changing or incomplete metadata aborts the whole observation", async () => {
-  const snapshot = account([{ id: "1", playable: true }]);
-  for (const metadata of [[], snapshot.songs.map((item) => ({ ...item, song: { ...item.song, title: "Changed again" } }))]) {
-    await assert.rejects(verifySnapshotAnomalies(fakeClient({ metadata }), session, snapshot, identityState()),
-      (error) => error.kind === "incomplete_response");
-  }
-});
-
-test("metadata errors propagate and grey observations do not record or recheck identity", async () => {
-  const snapshot = account([{ id: "1", playable: true }]);
-  const error = new NeteaseError("network", "metadata failure");
-  await assert.rejects(verifySnapshotAnomalies(fakeClient({ metadataError: error }), session, snapshot, identityState()), error);
-  const grey = fakeClient({ availability: [{ id: "1", playable: false, code: 404, reason: "no_url" }] });
-  await verifySnapshotAnomalies(grey, session, account([{ id: "1", playable: false }]), identityState("Wrong"));
-  assert.equal(grey.metadataCalls, 0);
-});
-
-test("restoration to the original identity is rechecked before clearing wrong metadata", async () => {
-  const snapshot = account([{ id: "1", playable: true }]); snapshot.songs[0].song.title = "Original";
-  const client = fakeClient({ metadata: snapshot.songs });
-  await verifySnapshotAnomalies(client, session, snapshot, identityState("Wrong"));
-  assert.equal(client.metadataCalls, 1);
-});
-
-test("grey and mismatch turning missing also require a complete second membership read", async () => {
-  for (const type of ["grey", "mismatch"]) {
-    const client = fakeClient({ secondTrackIds: [] });
-    await verifySnapshotAnomalies(client, session, account([]), { playlistSongs: [managed("1", "anomaly", type)] });
-    assert.equal(client.playlistCalls, 1);
-  }
+test("cloud snapshot checks pagination and reads details and playback once", async () => {
+  const { client, calls } = observe();
+  const cloud = await client.getCloudAccountSnapshot(session, { expectedUserId: "42" });
+  assert.deepEqual(snapshotForStateMachine(cloud).songs.map((item) => item.durationMs), [180001, 180002]);
+  assert.deepEqual(calls, ["/api/nuser/account/get", "/api/v1/cloud/get",
+    "/api/v3/song/detail", "/api/song/enhance/player/url"]);
+  await assert.rejects(observe({ cloudCount: 3 }).client.getCloudAccountSnapshot(session),
+    (error) => error.kind === "incomplete_response");
 });

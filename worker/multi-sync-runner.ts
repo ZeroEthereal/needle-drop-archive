@@ -4,7 +4,6 @@ import { commitPlaylistSyncPlan, loadPlaylistSyncState } from "../lib/sync/repos
 import type { Env } from "./env";
 import { getInstanceConfig } from "./instance-config";
 import { loadNeteaseSession, markNeteaseSessionStatus, storeNeteaseSessionIfBindingCurrent } from "./session-store";
-import { verifySnapshotAnomalies, cloudVerificationClient } from "./snapshot-verifier";
 import { CLOUD_SOURCE_ID } from "../lib/monitoring-source";
 import { snapshotForStateMachine } from "../lib/sync/snapshot";
 
@@ -59,9 +58,7 @@ export async function runMonitoredPlaylistSync(env: Env, batchId: string, playli
       ? await client.getCloudAccountSnapshot(stored.session, options)
       : await client.getAccountSnapshot(stored.session, { ...options, playlistId });
     await phase("compare_snapshot");
-    const verified = await verifySnapshotAnomalies(isCloud ? cloudVerificationClient(client, config.accountUid) : client,
-      stored.session, account, state);
-    const plan = planSnapshotSync(snapshotForStateMachine(verified), state, playlist.baseline_established === 1);
+    const plan = planSnapshotSync(snapshotForStateMachine(account), state, playlist.baseline_established === 1);
     await phase("persist_snapshot");
     await commitPlaylistSyncPlan(env.DB, playlistId, plan, batchId, task.binding_version);
     return { playlistId, ...plan.result };

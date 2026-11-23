@@ -1,12 +1,11 @@
 import type { WorkflowStep } from "cloudflare:workers";
 import { NeteaseClient } from "../lib/netease";
-import { assertCompleteSnapshot, planSnapshotSync } from "../lib/sync/state-machine";
+import { planSnapshotSync } from "../lib/sync/state-machine";
 import { listMonitoredPlaylists } from "../lib/sync/repository";
 import type { Env } from "./env";
 import { getInstanceConfig } from "./instance-config";
 import { loadNeteaseSession } from "./session-store";
 import { snapshotForStateMachine } from "../lib/sync/snapshot";
-import { verifySnapshotAnomalies, cloudVerificationClient } from "./snapshot-verifier";
 import { CLOUD_SOURCE_ID } from "../lib/monitoring-source";
 import { encodeSongUpserts, loadSongMetadata, propagateSourceSql, stagedSongMetadata, upsertSongsSql } from "../lib/sync/song-storage";
 
@@ -67,10 +66,7 @@ export async function preparePlaylistBaseline(env: Env, bindingId: string, playl
   if (!prior.success) throw new Error(prior.error || "Could not read staged song originals");
   const state = { playlistSongs: [], songs: stagedSongMetadata(
     keepOriginals ? await loadSongMetadata(env.DB) : [], (prior.results ?? []).map((row) => row.song_json)) };
-  const verified = await verifySnapshotAnomalies(isCloud ? cloudVerificationClient(client, pending.account_uid) : client,
-    stored.session, account, state);
-  const snapshot = assertCompleteSnapshot(snapshotForStateMachine(verified));
-  const plan = planSnapshotSync(snapshot, state, false);
+  const plan = planSnapshotSync(snapshotForStateMachine(account), state, false);
   const result = await env.DB.prepare(`INSERT INTO pending_playlist_baselines
     (binding_id, playlist_id, song_json, state_json, verified_at)
     VALUES (?, ?, ?, ?, ?) ON CONFLICT(binding_id, playlist_id) DO UPDATE SET

@@ -7,6 +7,7 @@ export class TestD1 {
     this.sqlite.exec("PRAGMA foreign_keys = ON");
     const directory = new URL("../../drizzle/", import.meta.url);
     this.sqlite.exec(readFileSync(new URL("0000_current_schema.sql", directory), "utf8"));
+    this.sqlite.exec(readFileSync(new URL("0002_song_duration_mismatch.sql", directory), "utf8"));
   }
   prepare(sql) {
     const statement = this.sqlite.prepare(sql);

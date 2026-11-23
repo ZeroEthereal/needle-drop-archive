@@ -27,6 +27,8 @@ export interface RecoveryItem {
   kind: RecoveryKind;
   observedTitle?: string;
   observedArtists?: string[];
+  baselineDurationMs?: number | null;
+  observedDurationMs?: number | null;
   song: SongRecord;
   lastNormalAt?: string;
   confirmedAt?: string;

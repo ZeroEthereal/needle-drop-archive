@@ -1,3 +1,5 @@
+import { validSongDuration } from "../song-display.ts";
+
 export type RecoveryType = "missing" | "grey" | "mismatch";
 export type PlaylistBucket = "normal" | "anomaly";
 
@@ -54,15 +56,12 @@ export interface SongMetadata extends SongDisplayMetadata {
   neteaseUrl?: string;
   observedTitle: string | null;
   observedArtists: string[] | null;
+  baselineDurationMs: number | null;
+  observedDurationMs: number | null;
 }
 
 export interface SongUpsert extends SnapshotSong, SongMetadata {
-  sourceState: "normal" | "grey" | "mismatch";
-}
-
-export function sameSongIdentity(left: Pick<SnapshotSong, "title" | "artists">,
-  right: Pick<SnapshotSong, "title" | "artists">): boolean {
-  return left.title === right.title && JSON.stringify(left.artists) === JSON.stringify(right.artists);
+  sourceState: "normal" | "grey" | "mismatch" | "playable_without_duration";
 }
 
 export interface SyncPlan {
@@ -171,23 +170,32 @@ export function planSnapshotSync(
   const metadataById = new Map((state.songs ?? []).map((song) => [song.id, song]));
   const songUpserts: SongUpsert[] = snapshot.songs.map((song) => {
     const stored = metadataById.get(song.id);
+    const durationMs = validSongDuration(song.durationMs);
+    const baselineDurationMs = stored?.baselineDurationMs ?? durationMs;
     const sourceState = !song.accountPlayable ? "grey" :
-      stored && !sameSongIdentity(stored, song) ? "mismatch" : "normal";
+      durationMs === null ? "playable_without_duration" :
+      durationMs !== baselineDurationMs ? "mismatch" : "normal";
+    const preserveEvidence = sourceState === "grey" || sourceState === "playable_without_duration";
+    const preserveDisplay = sourceState === "grey" || sourceState === "mismatch" ||
+      (sourceState === "playable_without_duration" && stored?.observedTitle != null);
     return {
       ...song,
       title: stored?.title ?? song.title,
       artists: stored?.artists ?? song.artists,
-      album: sourceState !== "normal" && stored ? stored.album : song.album,
-      coverUrl: sourceState !== "normal" && stored ? stored.coverUrl : song.coverUrl,
-      aliases: sourceState !== "normal" && stored ? stored.aliases ?? null : song.aliases ?? null,
-      translations: sourceState !== "normal" && stored ? stored.translations ?? null : song.translations ?? null,
-      durationMs: sourceState !== "normal" && stored ? stored.durationMs ?? null : song.durationMs ?? null,
+      album: preserveDisplay && stored ? stored.album : song.album,
+      coverUrl: preserveDisplay && stored ? stored.coverUrl : song.coverUrl,
+      aliases: (preserveDisplay && stored ? stored.aliases : song.aliases) ?? null,
+      translations: (preserveDisplay && stored ? stored.translations : song.translations) ?? null,
+      durationMs: preserveDisplay && stored ? stored.durationMs ?? null : durationMs,
+      baselineDurationMs,
       neteaseUrl: stored?.neteaseUrl ?? song.neteaseUrl ??
         `https://music.163.com/#/song?id=${encodeURIComponent(song.id)}`,
-      observedTitle: sourceState === "grey" ? stored?.observedTitle ?? null :
+      observedTitle: preserveEvidence ? stored?.observedTitle ?? null :
         sourceState === "mismatch" ? song.title : null,
-      observedArtists: sourceState === "grey" ? stored?.observedArtists ?? null :
+      observedArtists: preserveEvidence ? stored?.observedArtists ?? null :
         sourceState === "mismatch" ? [...song.artists] : null,
+      observedDurationMs: preserveEvidence ? stored?.observedDurationMs ?? null :
+        sourceState === "mismatch" ? durationMs : null,
       sourceState,
     };
   });
@@ -201,7 +209,9 @@ export function planSnapshotSync(
   for (const song of songUpserts) {
     while (reservedPositions.has(nextPosition)) nextPosition += 1;
     const existing = managed.get(song.id);
-    const type = song.sourceState === "normal" ? null : song.sourceState;
+    const retainMismatch = song.sourceState === "playable_without_duration" && existing?.anomalyType === "mismatch";
+    const type = retainMismatch || song.sourceState === "mismatch" ? "mismatch" :
+      song.sourceState === "grey" ? "grey" : null;
     const next: PlaylistSongState = {
       ...(existing ?? {
         songId: song.id,
@@ -216,7 +226,7 @@ export function planSnapshotSync(
       bucket: type ? "anomaly" : "normal",
       anomalyType: type,
       lastSeenAt: observedAt,
-      lastConfirmedAt: observedAt,
+      lastConfirmedAt: retainMismatch ? existing.lastConfirmedAt ?? observedAt : observedAt,
       lastPlayableAt: type === null ? observedAt : existing?.lastPlayableAt ?? null,
       confirmedAt: type === null ? null : existing?.anomalyType === type ?
         existing.confirmedAt : observedAt,

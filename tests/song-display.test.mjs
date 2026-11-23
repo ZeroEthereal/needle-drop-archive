@@ -47,16 +47,18 @@ test("display metadata follows the original through mismatch, grey and missing, 
   assert.deepEqual(recovery.translations, ["Translation"]);
   assert.equal(recovery.durationMs, 326999);
   assert.equal(recovery.observedTitle, "Wrong");
+  assert.equal(recovery.baselineDurationMs, 326999);
+  assert.equal(recovery.observedDurationMs, 120000);
   await sync(db, [song({ ...wrong, accountPlayable: false })], 3);
   await sync(db, [song({ id: "456" })], 4);
   recovery = (await listMultiRecovery(db)).items[0];
   assert.equal(recovery.type, "missing"); assert.equal(recovery.durationMs, 326999);
   assert.deepEqual(recovery.aliases, ["Alias", "Alias two"]);
-  const plan = await sync(db, [song({ aliases: [], translations: ["Restored translation"], durationMs: 360000 })], 5);
+  const plan = await sync(db, [song({ aliases: [], translations: ["Restored translation"] })], 5);
   assert.equal(plan.result.autoRecoveredCount, 1);
   const row = (await listPlaylistSongs(db, "A", { query: "Original" })).items.find((s) => s.id === "123");
   assert.equal(row.state, "playable"); assert.deepEqual(row.aliases, []);
-  assert.equal(row.durationMs, 360000); assert.equal(songSubtitle(row), "Restored translation");
+  assert.equal(row.durationMs, 326999); assert.equal(songSubtitle(row), "Restored translation");
   assert.equal((await listPlaylistSongs(db, "A", { query: "Restored translation" })).total, 0);
 });
 
@@ -65,7 +67,7 @@ test("first abnormal insertion can save metadata; existing missing fields never 
   await sync(db, [song({ accountPlayable: false })], 1);
   assert.equal((await listPlaylistSongs(db, "A")).items[0].durationMs, 326999);
   db.sqlite.exec("UPDATE songs SET aliases = NULL, translations = NULL, duration_ms = NULL");
-  await sync(db, [song({ title: "Wrong" })], 2);
+  await sync(db, [song({ title: "Wrong", durationMs: 327000 })], 2);
   const row = (await listMultiRecovery(db)).items[0];
   assert.equal(row.aliases, null); assert.equal(row.translations, null); assert.equal(row.durationMs, null);
 });
@@ -77,6 +79,7 @@ test("normal metadata-only changes do not produce mismatch and missing fields cl
   assert.equal(plan.result.confirmedMismatchCount, 0);
   const row = (await listPlaylistSongs(db, "A")).items[0];
   assert.equal(row.state, "playable"); assert.equal(songSubtitle(row), ""); assert.equal(row.durationMs, null);
+  assert.equal((await loadPlaylistSyncState(db, "A")).songs[0].baselineDurationMs, 326999);
 });
 
 test("staged metadata round-trips current arrays and nullable fields", () => {
@@ -94,6 +97,7 @@ test("current schema keeps original identity and nullable display metadata", (t)
   const row = db.sqlite.prepare("SELECT * FROM songs").get();
   assert.equal(row.title, "Original"); assert.equal(row.observed_title, "Wrong");
   assert.equal(row.aliases, null); assert.equal(row.translations, null); assert.equal(row.duration_ms, null);
+  assert.equal(row.baseline_duration_ms, null); assert.equal(row.observed_duration_ms, null);
   assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM playlist_song_states").get().n, 1);
   assert.deepEqual(db.sqlite.prepare("PRAGMA foreign_key_check").all(), []);
 });

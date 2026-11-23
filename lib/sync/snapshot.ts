@@ -1,4 +1,4 @@
-import { NeteaseClient, NeteaseError } from "../netease";
+import { NeteaseError, type NeteaseClient } from "../netease/index.ts";
 import type { CompletePlaylistSnapshot } from "./state-machine";
 
 export function snapshotForStateMachine(account: Awaited<ReturnType<NeteaseClient["getAccountSnapshot"]>>): CompletePlaylistSnapshot {

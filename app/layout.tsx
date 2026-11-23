@@ -20,7 +20,7 @@ export async function generateMetadata(): Promise<Metadata> {
     icons: { icon: "/favicon.svg" },
     openGraph: {
       title: "拾针 · 网易云音乐防丢台",
-      description: "收藏会消失，记忆不该。每天自动同步、复核并提醒。",
+      description: "收藏会消失，记忆不该。每天自动同步、检查异常并提醒。",
       locale: "zh_CN",
       type: "website",
       url: base,

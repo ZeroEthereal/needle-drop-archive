@@ -1,5 +1,6 @@
 import type { D1DatabasePort } from "./db";
 import { CLOUD_SOURCE_ID, type MonitoringSourceKind } from "../monitoring-source.ts";
+import { validSongDuration } from "../song-display.ts";
 import type { PlaylistSongState, SongDisplayMetadata, SyncPlan, SyncState } from "./state-machine";
 import { encodeSongUpserts, loadSongMetadata, propagateSourceSql, readSongDisplayMetadata, upsertSongsSql, type SongDisplayDbRow } from "./song-storage.ts";
 
@@ -170,6 +171,7 @@ export interface MultiRecoveryRow extends SongDisplayMetadata {
   songId: string; type: "missing" | "grey" | "mismatch"; title: string; artists: string[];
   album: string | null; coverUrl: string | null; neteaseUrl: string;
   observedTitle: string | null; observedArtists: string[] | null;
+  baselineDurationMs: number | null; observedDurationMs: number | null;
   lastNormalAt: string | null; contexts: Array<{ playlistId: string; playlistName: string; type: "missing" | "grey" | "mismatch" }>;
 }
 
@@ -216,6 +218,7 @@ export async function listMultiRecovery(db: D1DatabasePort, options: {
     db.prepare(`SELECT songs.id AS song_id, songs.title, songs.artists, songs.album,
       songs.cover_url, songs.netease_url, songs.observed_title, songs.observed_artists,
       songs.aliases, songs.translations, songs.duration_ms,
+      songs.baseline_duration_ms, songs.observed_duration_ms,
       (SELECT CASE WHEN SUM(x.anomaly_type = 'missing') > 0 THEN 'missing' WHEN SUM(x.anomaly_type = 'grey') > 0 THEN 'grey' ELSE 'mismatch' END
        FROM playlist_song_states x WHERE x.song_id = songs.id AND x.bucket = 'anomaly') AS type,
       (SELECT MIN(x.last_playable_at) FROM playlist_song_states x WHERE x.song_id = songs.id
@@ -237,6 +240,7 @@ export async function listMultiRecovery(db: D1DatabasePort, options: {
           song_id: string; title: string; artists: string; album: string | null;
           cover_url: string | null; netease_url: string; type: "missing" | "grey" | "mismatch";
           observed_title: string | null; observed_artists: string | null;
+          baseline_duration_ms: number | null; observed_duration_ms: number | null;
           last_normal_at: string | null; contexts: string;
         }>(),
     db.prepare(`SELECT COUNT(*) AS total FROM songs WHERE EXISTS (
@@ -254,6 +258,8 @@ export async function listMultiRecovery(db: D1DatabasePort, options: {
       neteaseUrl: row.netease_url, lastNormalAt: row.last_normal_at,
       observedTitle: row.type === "mismatch" ? row.observed_title : null,
       observedArtists: row.type === "mismatch" && row.observed_artists !== null ? JSON.parse(row.observed_artists) : null,
+      baselineDurationMs: row.type === "mismatch" ? validSongDuration(row.baseline_duration_ms) : null,
+      observedDurationMs: row.type === "mismatch" ? validSongDuration(row.observed_duration_ms) : null,
       contexts: JSON.parse(row.contexts),
     })),
     nextOffset: found.length > limit ? offset + limit : null,

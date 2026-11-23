@@ -117,6 +117,8 @@ function normalizeRecovery(value: unknown): RecoveryItem | null {
     song,
     observedTitle: typeof value.observedTitle === "string" ? value.observedTitle : undefined,
     observedArtists: Array.isArray(value.observedArtists) ? normalizeArtists(value.observedArtists) : undefined,
+    baselineDurationMs: validSongDuration(value.baselineDurationMs),
+    observedDurationMs: validSongDuration(value.observedDurationMs),
     lastNormalAt: firstString(value.lastNormalAt),
     confirmedAt: firstString(value.confirmedAt),
     contexts: Array.isArray(value.contexts) ? value.contexts.flatMap((context) => {
@@ -678,7 +680,7 @@ function RecoveryView({
       <PageHeading
         eyebrow="RECOVERY QUEUE"
         title="待找回"
-        description="这里只收纳已经确认的异常：仍在歌单但不可播放的是变灰，离开歌单的是消失，ID 不变但歌名或歌手变化的是错配。"
+        description="仍在歌单但不可播放的是变灰，离开歌单的是消失，同一首歌可播放但时长与基准不同的是错配。"
         right={<span className="heading-count">{loadState === "ready" ? formatNumber(total ?? visible.length) : "—"} 首</span>}
       />
       <div className="recovery-explainer">
@@ -781,10 +783,14 @@ function RecoveryView({
                   {completingSongId === item.song.id ? "处理中" : "完成"}
                 </button>
               </div>
-              {item.kind === "mismatch" && item.observedTitle !== undefined ?
+              {item.kind === "mismatch" ?
                 <div className="mismatch-comparison">
-                  <p><span>原资料</span><span>{item.song.title} ／ {artistLine(item.song)}</span></p>
-                  <p><span>当前资料</span><span>{item.observedTitle} ／ {item.observedArtists?.join(" / ") || "未知歌手"}</span></p>
+                  {item.observedTitle !== undefined ? <>
+                    <p><span>原资料</span><span>{item.song.title} ／ {artistLine(item.song)}</span></p>
+                    <p><span>当前资料</span><span>{item.observedTitle} ／ {item.observedArtists?.join(" / ") || "未知歌手"}</span></p>
+                  </> : null}
+                  <p><span>原时长</span><span>{item.baselineDurationMs == null ? "—" : `${item.baselineDurationMs} 毫秒`}</span></p>
+                  <p><span>错配时长</span><span>{item.observedDurationMs == null ? "—" : `${item.observedDurationMs} 毫秒`}</span></p>
                 </div> : null}
             </article>
           ))}
@@ -813,7 +819,7 @@ function PlaylistPulse({ playlist, disabled, onSync, filter, onFilterChange }: {
   const playlistName = playlist ? playlistDisplayName(playlist) : "歌单歌曲";
   const active = task?.status === "running" || task?.status === "queued";
   const currentPhase = phaseIndex(task?.phase);
-  const steps = ["验证会话", `读取${subject}`, "检查状态", "复核异常", "完成同步"];
+  const steps = ["验证会话", `读取${subject}`, "检查状态", "对账", "完成同步"];
   return <>
     <PageHeading eyebrow="KEEP THE BEAT ALIVE" title={playlistName}
       description={playlist ? `查看 ${playlistName} 的守护状态，并可单独同步这个${subject}。` : "等待选择歌单。"}
@@ -839,10 +845,10 @@ function PlaylistPulse({ playlist, disabled, onSync, filter, onFilterChange }: {
     <section className="sync-metrics" role="group" aria-label={`${subject}状态筛选`}>
       {([
         { value: "all", label: "全部", count: playlist?.totalSongCount, accent: "cyan", description: "正常、变灰、消失与错配的总和" },
-        { value: "playable", label: "正常", count: playlist?.normalCount, accent: "lime", description: "资料一致且可以播放" },
+        { value: "playable", label: "正常", count: playlist?.normalCount, accent: "lime", description: "可以播放" },
         { value: "grey", label: "变灰", count: playlist?.greyCount, accent: "violet", description: `仍在${subject}但不可播放` },
         { value: "missing", label: "消失", count: playlist?.missingCount, accent: "red", description: `已经离开这个${subject}` },
-        { value: "mismatch", label: "错配", count: playlist?.mismatchCount, accent: "amber", description: "可播放但歌名或歌手变化" },
+        { value: "mismatch", label: "错配", count: playlist?.mismatchCount, accent: "amber", description: "可播放但时长与基准不同" },
       ] as const).map((item) => <button type="button" key={item.value}
         className={`metric-card accent-${item.accent} ${filter === item.value ? "is-active" : ""}`}
         aria-pressed={filter === item.value} disabled={!playlist} onClick={() => onFilterChange(item.value)}>
@@ -1000,7 +1006,7 @@ function SyncView({
 }) {
   const currentPhase = phaseIndex(status?.phase);
   const isActive = status?.batch?.status === "running" || status?.batch?.status === "queued";
-  const steps = ["验证会话", "读取歌曲", "检查状态", "复核异常", "完成同步"];
+  const steps = ["验证会话", "读取歌曲", "检查状态", "对账", "完成同步"];
   const sessionGood = status?.sessionStatus === "valid";
   const configured = status?.setupState === "ready" && Boolean(status.playlist);
   const progressStyle = status?.progress !== undefined
@@ -1247,7 +1253,7 @@ function FreshBaselineConfirmModal({ onClose, onConfirm }: {
       <button type="button" className="modal-close" onClick={onClose} aria-label="关闭">×</button>
       <p className="micro-label">FRESH NETEASE BASELINE</p>
       <h2>从网易云重新建立基线？</h2>
-      <p className="rebind-confirm-warning">会完整读取并复核全部已选歌单及网易云盘；只有全部成功后，才一次性清空旧歌曲状态、待找回和旧同步记录并写入新快照。未选歌单也会取消监控。读取失败时当前数据不变。</p>
+      <p className="rebind-confirm-warning">会读取全部已选歌单及网易云盘并检查数据是否完整。全部成功后，一次性清空旧歌曲状态、待找回和旧同步记录并写入新快照。未选歌单也会取消监控。读取失败时保留当前数据。</p>
       <div className="modal-actions rebind-confirm-actions">
         <button type="button" className="quiet-button" onClick={onClose}>取消</button>
         <button type="button" className="primary-button" onClick={onConfirm}>确认重建</button>
