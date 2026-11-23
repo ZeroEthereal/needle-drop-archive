@@ -35,6 +35,8 @@ export interface Env {
   ALLOWED_EMAIL?: string;
   ALLOW_LOCAL_DEV?: string;
 
+  NOTIFICATION_EMAIL?: SendEmail;
+  NOTIFICATION_EMAIL_FROM?: string;
   SESSION_ENCRYPTION_KEY?: string;
 
 }

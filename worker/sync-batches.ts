@@ -2,6 +2,7 @@ import type { Env } from "./env";
 import { getInstanceConfig } from "./instance-config";
 import { listMonitoringSources } from "../lib/sync/repository";
 import { CLOUD_SOURCE_ID } from "../lib/monitoring-source";
+import { checkScheduledEmail, emailAttemptKeyPrefix, logNotificationFailure } from "./email-notifications";
 
 export type BatchTrigger = "manual" | "scheduled";
 
@@ -47,6 +48,10 @@ export async function createSyncBatch(env: Env, trigger: BatchTrigger, playlistI
     env.DB.prepare(`DELETE FROM sync_batches WHERE created_at < datetime('now', '-30 days')
       AND status NOT IN ('queued', 'running')`),
   ];
+  if (trigger === "scheduled") {
+    statements.push(env.DB.prepare(`DELETE FROM settings WHERE key GLOB ?
+      AND updated_at < datetime('now', '-30 days')`).bind(`${emailAttemptKeyPrefix}scheduled-*`));
+  }
   const results = await env.DB.batch(statements);
   const failed = results.find((row) => !row.success);
   if (failed) throw new Error(failed.error || "Could not queue sync batch");
@@ -61,11 +66,14 @@ export async function createSyncBatch(env: Env, trigger: BatchTrigger, playlistI
   } catch (error) {
     const instance = await env.MUSIC_BATCH.get(`batch-${id}`).catch(() => null);
     if (!instance) {
-      await env.DB.prepare(`UPDATE sync_batches SET status = 'failed',
+      const failedBatch = await env.DB.prepare(`UPDATE sync_batches SET status = 'failed',
         error_code = 'WORKFLOW_DISPATCH_FAILED', error_message = ?,
         completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'queued'`)
         .bind((error instanceof Error ? error.message : "Workflow 派发失败").slice(0, 500), id)
         .run().catch(() => undefined);
+      if (trigger === "scheduled" && failedBatch?.success && failedBatch.meta.changes === 1) {
+        await checkScheduledEmail(env, id, true).catch((error) => logNotificationFailure(id, error));
+      }
       throw error;
     }
   }

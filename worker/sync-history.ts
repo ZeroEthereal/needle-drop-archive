@@ -18,6 +18,16 @@ interface HistoryTask {
   status: string;
 }
 
+export function syncHistoryOutcome(batch: Pick<HistoryBatch, "status" | "playlist_count">,
+  tasks: readonly Omit<HistoryTask, "batch_id">[],
+) {
+  const failedPlaylists = tasks.filter((task) => task.status !== "success")
+    .map((task) => ({ id: task.playlist_id, name: task.playlist_name }));
+  const successful = batch.status === "success" && tasks.length === batch.playlist_count
+    && failedPlaylists.length === 0;
+  return { successful, failedPlaylists };
+}
+
 export async function listSyncHistory(db: D1Database, offset: number, now = new Date()) {
   // Shanghai uses UTC+8. Include today and the preceding six calendar days.
   const shanghai = new Date(now.getTime() + 8 * 60 * 60 * 1000);
@@ -49,10 +59,7 @@ export async function listSyncHistory(db: D1Database, offset: number, now = new 
   }
   const items: SyncHistoryRecord[] = batches.map((batch) => {
     const entries = tasks.filter((task) => task.batch_id === batch.id);
-    const failedPlaylists = entries.filter((task) => task.status !== "success")
-      .map((task) => ({ id: task.playlist_id, name: task.playlist_name }));
-    const successful = batch.status === "success" && entries.length === batch.playlist_count
-      && failedPlaylists.length === 0;
+    const { successful, failedPlaylists } = syncHistoryOutcome(batch, entries);
     const playlist = batch.scope !== "all" && entries[0]
       ? { id: entries[0].playlist_id, name: entries[0].playlist_name } : undefined;
     return {

@@ -7,6 +7,7 @@ import type { Env } from "./env";
 import { runMonitoredPlaylistSync } from "./multi-sync-runner";
 import { refreshScheduledBatchSelection, summarizeBatch } from "./sync-batches";
 import { runBaselineChild, runPlaylistSetBinding } from "./playlist-set-binding";
+import { checkScheduledEmail, logNotificationFailure } from "./email-notifications";
 
 export type MusicSyncParams =
   | { action: "sync_playlist"; batchId: string; playlistId: string }
@@ -132,7 +133,16 @@ export class MusicBatchWorkflow extends WorkflowEntrypoint<Env, MusicBatchParams
           /NETEASE_(AUTHENTICATION|ANONYMOUS|SESSION_EXPIRED|UID_MISMATCH|RISK_CONTROL)/.test(outcome.error_code));
       }
     } finally {
-      await step.do("finalize batch", async () => summarizeBatch(this.env, batchId));
+      try {
+        if (batchId.startsWith("scheduled-")) {
+          await step.do("check scheduled email notifications", { retries: { limit: 0, delay: "1 second" }, timeout: "2 minutes" },
+            async () => checkScheduledEmail(this.env, batchId));
+        }
+      } catch (error) {
+        logNotificationFailure(batchId, error);
+      } finally {
+        await step.do("finalize batch", async () => summarizeBatch(this.env, batchId));
+      }
     }
   }
 }

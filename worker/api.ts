@@ -19,7 +19,7 @@ import {
 } from "./auth-flows";
 import { getInstanceConfig, playlistPublicMetadata } from "./instance-config";
 import {
-  completeSongEverywhere, defaultPlaylist, listMonitoredPlaylists, listMonitoringSources,
+  completeSongEverywhere, countRecoverySongs, defaultPlaylist, listMonitoredPlaylists, listMonitoringSources,
   listMultiRecovery, listPlaylistSongs,
 } from "../lib/sync/repository";
 import { createSyncBatch, latestBatchStatus, latestCompletedBatch } from "./sync-batches";
@@ -27,6 +27,8 @@ import { listSyncHistory } from "./sync-history";
 import type { PlaylistSelection } from "./playlist-set-binding";
 import { CLOUD_SOURCE_ID } from "../lib/monitoring-source";
 import { databaseDailyLimit, isDatabaseDailyLimit } from "../lib/database-limit";
+import { hasEmailNotificationRule, parseEmailNotificationSettings } from "../lib/email-notifications";
+import { emailNotificationsAvailable, readEmailNotificationSettings, saveEmailNotificationSettings } from "./email-notifications";
 
 const QR_CREATE_COOLDOWN_MS = 5_000;
 
@@ -149,6 +151,26 @@ app.use("/api/*", async (context, next) => {
 
 app.options("/api/*", (context) => context.body(null, 204));
 
+app.get("/api/settings/email-notifications", async (context) => {
+  return context.json(await readEmailNotificationSettings(context.env));
+});
+
+app.put("/api/settings/email-notifications", async (context) => {
+  const settings = parseEmailNotificationSettings(await jsonBody(context));
+  if (!settings) throw new ApiError(400, "INVALID_EMAIL_NOTIFICATION_SETTINGS", "请为每项歌曲规则填写正整数阈值。");
+  if (settings.enabled && !hasEmailNotificationRule(settings)) {
+    throw new ApiError(400, "EMAIL_NOTIFICATION_RULE_REQUIRED", "开启通知时至少选择一项规则。");
+  }
+  const available = emailNotificationsAvailable(context.env);
+  if (settings.enabled && !available) {
+    throw new ApiError(503, "EMAIL_NOTIFICATION_UNAVAILABLE", "当前实例尚未配置邮件发送服务。");
+  }
+  if (!await saveEmailNotificationSettings(context.env.DB, settings)) {
+    throw new ApiError(409, "EMAIL_NOTIFICATION_SETTINGS_BUSY", "设置正在更新，请重试保存。");
+  }
+  return context.json({ settings, available });
+});
+
 app.get("/api/recovery", async (context) => {
   const url = new URL(context.req.url);
   const { offset, limit } = pagination(url);
@@ -265,12 +287,7 @@ app.get("/api/sync/status", async (context) => {
     }>(),
     listMonitoringSources(context.env.DB),
     latestBatchStatus(context.env),
-    context.env.DB.prepare(`SELECT COUNT(DISTINCT song_id) AS total,
-      COUNT(DISTINCT CASE WHEN anomaly_type = 'grey' THEN song_id END) AS grey,
-      COUNT(DISTINCT CASE WHEN anomaly_type = 'missing' THEN song_id END) AS missing,
-      COUNT(DISTINCT CASE WHEN anomaly_type = 'mismatch' THEN song_id END) AS mismatch
-      FROM playlist_song_states WHERE bucket = 'anomaly'`)
-      .first<{ total: number; grey: number; missing: number; mismatch: number }>(),
+    countRecoverySongs(context.env.DB),
     context.env.DB.prepare(`SELECT * FROM (
       SELECT t.*, ROW_NUMBER() OVER (PARTITION BY t.playlist_id
         ORDER BY datetime(b.created_at) DESC, b.id DESC) AS rank

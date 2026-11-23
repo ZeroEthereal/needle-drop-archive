@@ -1,6 +1,7 @@
 "use client";
 
 import SyncHistory from "./SyncHistory";
+import EmailNotificationSettings from "./EmailNotificationSettings";
 import { requestJson, RequestJsonError, type RequestOption } from "../api-client";
 import { DATABASE_DAILY_LIMIT_CODE } from "../../lib/database-limit";
 import { CLOUD_SOURCE_ID } from "../../lib/monitoring-source";
@@ -1299,6 +1300,7 @@ export function MusicVault() {
   const [playlistChoices, setPlaylistChoices] = useState<PlaylistChoice[]>([]);
   const [selectedPlaylistIds, setSelectedPlaylistIds] = useState<string[]>([]);
   const [playlistFlowId, setPlaylistFlowId] = useState<string>();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<Toast>();
   const [batchSummary, setBatchSummary] = useState<SyncBatchStatus>();
   const [backgrounded, setBackgrounded] = useState(false);
@@ -1957,6 +1959,8 @@ export function MusicVault() {
           <div className="topbar-meta">
             <p><small>LAST SYNC</small>{status?.lastSuccessAt ? formatDateTime(status.lastSuccessAt) : "等待首次同步"}</p>
             <button type="button" className="compact-motion" onClick={() => handleMotion(motion === "immersive" ? "balanced" : motion === "balanced" ? "static" : "immersive")} aria-label="切换动态效果">✦</button>
+            <button type="button" className="compact-motion topbar-settings" aria-haspopup="dialog" aria-label="设置"
+              onClick={() => setSettingsOpen(true)}>设置</button>
           </div>
         </header>
 
@@ -2051,6 +2055,8 @@ export function MusicVault() {
       {qrOpen ? <QrModal login={qrLogin} onClose={closeQr} onRefresh={() => {
         void cancelFlow(qrLogin?.flowId).finally(() => createQr());
       }} /> : null}
+      {settingsOpen ? <EmailNotificationSettings request={requestApi} onClose={() => setSettingsOpen(false)}
+        onSaved={() => { setSettingsOpen(false); notify("邮箱通知设置已保存。", "good"); }} /> : null}
       {playlistOpen ? (
         <PlaylistModal
           playlists={playlistChoices}

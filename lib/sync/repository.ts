@@ -173,6 +173,37 @@ export interface MultiRecoveryRow extends SongDisplayMetadata {
   lastNormalAt: string | null; contexts: Array<{ playlistId: string; playlistName: string; type: "missing" | "grey" | "mismatch" }>;
 }
 
+export async function countRecoverySongs(db: D1DatabasePort) {
+  return db.prepare(`SELECT COUNT(DISTINCT song_id) AS total,
+    COUNT(DISTINCT CASE WHEN anomaly_type = 'grey' THEN song_id END) AS grey,
+    COUNT(DISTINCT CASE WHEN anomaly_type = 'missing' THEN song_id END) AS missing,
+    COUNT(DISTINCT CASE WHEN anomaly_type = 'mismatch' THEN song_id END) AS mismatch
+    FROM playlist_song_states WHERE bucket = 'anomaly'`)
+    .first<{ total: number; grey: number; missing: number; mismatch: number }>();
+}
+
+export async function listRecoveryEmailPage(db: D1DatabasePort, after: string, limit: number) {
+  const page = await db.prepare(`WITH pending AS (
+    SELECT id, title, artists, observed_title, observed_artists FROM songs
+    WHERE id > ? AND EXISTS (SELECT 1 FROM playlist_song_states
+      WHERE song_id = songs.id AND bucket = 'anomaly')
+    ORDER BY id LIMIT ?
+  ) SELECT pending.*, (SELECT json_group_array(json_object('name', p.name, 'type', s.anomaly_type))
+    FROM playlist_song_states s JOIN monitored_playlists p ON p.id = s.playlist_id
+    WHERE s.song_id = pending.id AND s.bucket = 'anomaly') AS contexts
+    FROM pending ORDER BY id`).bind(after, limit).all<{
+      id: string; title: string; artists: string; observed_title: string | null;
+      observed_artists: string | null; contexts: string;
+    }>();
+  if (!page.success) throw new Error("Could not read recovery email songs");
+  return (page.results ?? []).map((row) => ({
+    ...row,
+    artists: JSON.parse(row.artists) as string[],
+    observed_artists: row.observed_artists === null ? null : JSON.parse(row.observed_artists) as string[],
+    contexts: JSON.parse(row.contexts) as Array<{ name: string; type: "grey" | "missing" | "mismatch" }>,
+  }));
+}
+
 export async function listMultiRecovery(db: D1DatabasePort, options: {
   type?: "missing" | "grey" | "mismatch"; playlistId?: string; query?: string; offset?: number; limit?: number;
 } = {}): Promise<{ items: MultiRecoveryRow[]; nextOffset: number | null; total: number }> {

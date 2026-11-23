@@ -449,6 +449,16 @@ input:focus-visible {
   cursor: pointer;
 }
 
+.topbar-settings {
+  width: auto;
+  min-width: 52px;
+  padding-inline: 10px;
+  border-radius: 14px;
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 .content-stage {
   width: min(1440px, 100%);
   margin: 0 auto;
@@ -1751,6 +1761,91 @@ input:focus-visible {
   cursor: pointer;
 }
 
+.email-settings-modal {
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  color: var(--text);
+}
+
+.email-settings-modal::backdrop {
+  background: rgba(3, 2, 6, .78);
+  backdrop-filter: blur(10px);
+}
+
+.email-settings-modal h2 {
+  margin: 0 44px 24px 0;
+  font-size: 24px;
+}
+
+.email-settings-form,
+.email-settings-rules {
+  display: grid;
+  gap: 12px;
+}
+
+.email-settings-rules {
+  min-width: 0;
+  margin: 0;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.email-settings-rules legend {
+  padding-inline: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.email-settings-rules:disabled {
+  opacity: .62;
+}
+
+.email-settings-switch,
+.email-settings-failure,
+.email-settings-rule,
+.email-settings-rule label,
+.email-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.email-settings-rule {
+  justify-content: space-between;
+}
+
+.email-settings-modal input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  margin: 0;
+  accent-color: var(--lime);
+}
+
+.email-threshold input {
+  width: 78px;
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .06);
+  color: var(--text);
+  font: inherit;
+}
+
+.email-settings-hint,
+.email-settings-error {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.email-settings-error { color: var(--red); }
+.email-settings-actions { flex-wrap: wrap; justify-content: flex-end; margin-top: 6px; }
+
 .modal-song {
   display: flex;
   align-items: center;
@@ -2242,6 +2337,7 @@ input:focus-visible {
   .mobile-brand { display: flex; margin-right: auto; }
   .mobile-brand .brand-disc { width: 34px; }
   .topbar-meta p { display: none; }
+  .topbar:has(.topbar-settings) { gap: 12px; }
   .content-stage { padding: 28px 20px 112px; }
   .mobile-nav {
     position: fixed;
