@@ -1,4 +1,4 @@
-export type ViewId = "recovery" | "likes" | "sync" | "cloud";
+export type ViewId = "recovery" | "likes" | "sync" | "cloud" | "settings";
 
 export type MotionMode = "immersive" | "balanced" | "static";
 

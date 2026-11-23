@@ -459,6 +459,11 @@ input:focus-visible {
   white-space: nowrap;
 }
 
+.topbar-settings[aria-current="page"] {
+  border-color: var(--line-hot);
+  background: rgba(244, 66, 208, .1);
+}
+
 .content-stage {
   width: min(1440px, 100%);
   margin: 0 auto;
@@ -1761,21 +1766,28 @@ input:focus-visible {
   cursor: pointer;
 }
 
-.email-settings-modal {
-  max-width: calc(100vw - 32px);
-  max-height: calc(100dvh - 32px);
-  margin: auto;
-  color: var(--text);
+.settings-panel {
+  display: grid;
+  width: min(100%, 800px);
+  gap: 20px;
+  padding: clamp(16px, 3vw, 30px);
+  border-radius: 20px;
 }
 
-.email-settings-modal::backdrop {
-  background: rgba(3, 2, 6, .78);
-  backdrop-filter: blur(10px);
+.view-settings h1:focus {
+  outline: none;
 }
 
-.email-settings-modal h2 {
-  margin: 0 44px 24px 0;
-  font-size: 24px;
+.settings-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-panel-heading h2 {
+  margin: 0 0 6px;
+  font-size: clamp(18px, 2.5vw, 24px);
 }
 
 .email-settings-form,
@@ -1816,13 +1828,55 @@ input:focus-visible {
   justify-content: space-between;
 }
 
-.email-settings-modal input[type="checkbox"] {
+.email-settings-rules input[type="checkbox"] {
   width: 18px;
   height: 18px;
   flex: none;
   margin: 0;
   accent-color: var(--lime);
 }
+
+.email-settings-switch {
+  min-height: 44px;
+  flex: none;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.email-settings-switch input {
+  appearance: none;
+  display: grid;
+  width: 44px;
+  height: 26px;
+  align-items: center;
+  padding: 3px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .08);
+  cursor: inherit;
+}
+
+.email-settings-switch input::before {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--muted);
+  content: "";
+}
+
+.email-settings-switch input:checked {
+  border-color: var(--lime);
+  background: rgba(196, 255, 105, .13);
+}
+
+.email-settings-switch input:checked::before {
+  justify-self: end;
+  background: var(--lime);
+}
+
+.email-settings-switch input:disabled { opacity: .55; cursor: not-allowed; }
 
 .email-threshold input {
   width: 78px;

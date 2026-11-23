@@ -49,7 +49,7 @@ type Toast = { message: string; tone: "good" | "bad" | "info" };
 const LIKES_PAGE_SIZE = 100;
 
 const navItems: Array<{
-  id: ViewId;
+  id: Exclude<ViewId, "settings">;
   label: string;
   eyebrow: string;
   glyph: string;
@@ -1306,11 +1306,11 @@ export function MusicVault() {
   const [playlistChoices, setPlaylistChoices] = useState<PlaylistChoice[]>([]);
   const [selectedPlaylistIds, setSelectedPlaylistIds] = useState<string[]>([]);
   const [playlistFlowId, setPlaylistFlowId] = useState<string>();
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<Toast>();
   const [batchSummary, setBatchSummary] = useState<SyncBatchStatus>();
   const [backgrounded, setBackgrounded] = useState(false);
   const appRef = useRef<HTMLDivElement>(null);
+  const settingsHeadingRef = useRef<HTMLHeadingElement>(null);
   const likesSentinelRef = useRef<HTMLDivElement>(null);
   const recoveryRequest = useRef(0);
   const likesRequest = useRef(0);
@@ -1483,7 +1483,10 @@ export function MusicVault() {
         try {
           const saved: unknown = JSON.parse(window.sessionStorage.getItem("needle-drop-navigation") ?? "null");
           if (isRecord(saved) && saved.accountUid === accountUid) {
-            if (["recovery", "sync", "likes", "cloud"].includes(String(saved.view))) setView(saved.view as ViewId);
+            if (["recovery", "sync", "likes", "cloud", "settings"].includes(String(saved.view))) {
+              const savedView = saved.view as ViewId;
+              setView((current) => current === "settings" ? current : savedView);
+            }
             setPlaylistExpanded(saved.expanded === true);
             const id = firstString(saved.selectedPlaylistId);
             const valid = next.playlists?.some((playlist) => playlist.id === id);
@@ -1551,6 +1554,10 @@ export function MusicVault() {
       }));
     } catch { /* Navigation still works when browser storage is unavailable. */ }
   }, [navigationReady, playlistExpanded, selectedPlaylistId, status?.profile?.userId, view]);
+
+  useEffect(() => {
+    if (view === "settings") settingsHeadingRef.current?.focus({ preventScroll: true });
+  }, [view]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadRecovery(undefined, false), 0);
@@ -1965,13 +1972,20 @@ export function MusicVault() {
           <div className="topbar-meta">
             <p><small>LAST SYNC</small>{status?.lastSuccessAt ? formatDateTime(status.lastSuccessAt) : "等待首次同步"}</p>
             <button type="button" className="compact-motion" onClick={() => handleMotion(motion === "immersive" ? "balanced" : motion === "balanced" ? "static" : "immersive")} aria-label="切换动态效果">✦</button>
-            <button type="button" className="compact-motion topbar-settings" aria-haspopup="dialog" aria-label="设置"
-              onClick={() => setSettingsOpen(true)}>设置</button>
+            <button type="button" className="compact-motion topbar-settings" aria-current={view === "settings" ? "page" : undefined}
+              onClick={() => { switchView("settings"); window.scrollTo(0, 0); }}>设置</button>
           </div>
         </header>
 
         <div className="content-stage">
-          {databaseLimit ? <div role="alert">
+          {view === "settings" ? (
+            <section className="view-stack view-settings" aria-labelledby="settings-title">
+              <header className="page-heading">
+                <h1 id="settings-title" ref={settingsHeadingRef} tabIndex={-1}>设置</h1>
+              </header>
+              <EmailNotificationSettings request={requestApi} onSaved={() => notify("邮箱通知设置已保存。", "good")} />
+            </section>
+          ) : databaseLimit ? <div role="alert">
             <EmptyState unavailable eyebrow="DAILY LIMIT REACHED" title="今日数据库免费额度已用完" body={databaseLimit.message}
               action={<button type="button" className="primary-button" disabled={statusState === "loading"}
                 onClick={() => void loadStatus(true)}>{statusState === "loading" ? "正在检查" : "重新检查"}</button>} />
@@ -2061,8 +2075,6 @@ export function MusicVault() {
       {qrOpen ? <QrModal login={qrLogin} onClose={closeQr} onRefresh={() => {
         void cancelFlow(qrLogin?.flowId).finally(() => createQr());
       }} /> : null}
-      {settingsOpen ? <EmailNotificationSettings request={requestApi} onClose={() => setSettingsOpen(false)}
-        onSaved={() => { setSettingsOpen(false); notify("邮箱通知设置已保存。", "good"); }} /> : null}
       {playlistOpen ? (
         <PlaylistModal
           playlists={playlistChoices}
