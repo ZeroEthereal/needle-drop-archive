@@ -1,6 +1,6 @@
 # 拾针部署指南
 
-本项目采用“一名用户一套 Cloudflare 实例”。每个实例只管理一个网易云账号，可监控 1–20 个歌单，维护者不提供集中服务器。
+本项目采用“一名用户一套 Cloudflare 实例”。每个实例只管理一个网易云账号，监控 1–20 个歌单及该账号云盘，维护者不提供集中服务器。
 
 ## 选择部署方式
 
@@ -22,7 +22,7 @@ Windows 用户可以下载项目后，把 [DEPLOY_WITH_AGENT.md](./DEPLOY_WITH_A
 
 ### 方式三：完整手动部署
 
-下面记录全部 Windows 手动步骤。macOS 和 Linux 首版建议使用官方按钮。
+下面记录全部 Windows 手动步骤。macOS 和 Linux 用户建议使用官方按钮。
 
 ## Windows 手动部署
 
@@ -77,7 +77,7 @@ npm run verify
 npm run deploy:full
 ```
 
-正式部署程序严格按以下顺序运行：
+`npm run deploy:full` 先构建，`npm run deploy` 使用已有构建；两者先验证生成配置继承了所选源配置的 Worker、D1 和同步 Workflow 身份，再执行以下步骤：
 
 1. 应用 `drizzle` 中尚未执行的 D1 migrations；
 2. 查询 `instance_config` 是否已经包含正式配置；
@@ -143,9 +143,17 @@ npm run deploy:full
 
 三种部署方式都会继承 `wrangler.jsonc` 中的 Observability 配置，无需在 Cloudflare 控制台额外启用。项目默认以 `head_sampling_rate: 1` 保存全部 Worker 调用日志；部署完成后，可在 **Workers & Pages → 当前 Worker → Observability** 中按请求路径、响应状态、执行结果和异常筛选日志。
 
-日志只从启用后的新请求开始保存，不会补录部署前的历史，也不会记录尚未到达 Worker 的浏览器网络失败。Cloudflare 免费 Workers 套餐当前包含每天 200,000 条日志并保留 3 天；付费 Workers 套餐包含每月 2,000 万条日志并保留 7 天，超出部分按 Cloudflare 当前价格计费。项目当前流量适合使用完整采样；若部署者以后显著扩大流量，应按 [Cloudflare Workers Logs 文档](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) 调低 `head_sampling_rate`。
+日志只从启用后的新请求开始保存，不补录历史，也不记录尚未到达 Worker 的浏览器网络失败。日志额度、保留期和计费以 [Cloudflare Workers Logs 文档](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) 及账户套餐为准；流量扩大时按需要调低 `head_sampling_rate`。
 
-Worker 代码不得把网易 Cookie、Access JWT、Secret 或其他身份凭据写入 `console`。当前自定义运行日志只记录网易请求失败的端点、分类、状态和错误摘要。
+Worker 代码不得把网易 Cookie、Access JWT、Secret、邮箱或其他身份凭据写入 `console`。网易请求失败日志记录端点、分类、状态和错误摘要；邮件失败日志记录事件、批次 ID 和安全错误代码。部署后可检查 `dist/server/wrangler.json` 中的 Observability 配置，并访问受保护接口，在控制台核对新请求日志。
+
+## 邮件通知配置
+
+邮件通知默认关闭，不影响基础监控与三种部署方式。要启用通知，需先在自己的 Cloudflare 账户完成邮件发送服务及收件地址验证，在部署配置中加入 `send_email` binding，binding 名称为 `NOTIFICATION_EMAIL`，并配置有效的发件地址变量 `NOTIFICATION_EMAIL_FROM`。项目使用 `cloudflare:email` 的 `EmailMessage` 和 binding 的 `send()`；平台权限、可用发件身份与收件限制以 [Cloudflare Send Email binding 文档](https://developers.cloudflare.com/email-routing/email-workers/send-email-workers/) 为准。
+
+本地发布把配置写入被忽略的 `wrangler.private.jsonc`，按钮部署用户在自己的实例配置中维护。保留既有 binding、域名、Access 变量和 Secret；收件人由 `ALLOWED_EMAIL` 决定。部署后打开“设置”，确认邮件服务可用，再开启通知并保存规则。
+
+只在每日自动同步后检查通知，手动同步不发邮件。可按变灰、消失、错配、待找回总数设置正整数阈值，或启用自动同步失败提醒。持续超过同一阈值不会每天重复提醒，每个每日批次至多尝试发送一次；规则和名单处理见 [开发指南](./PROJECT_GUIDE.md#邮件通知)。
 
 ## 使用受保护的自定义域名
 
@@ -172,8 +180,8 @@ Worker 代码不得把网易 Cookie、Access JWT、Secret 或其他身份凭据�
 3. 进入“同步状态”，点击“连接网易云”；
 4. 用网易云音乐 App 扫码并确认；
 5. 勾选 1–20 个可访问的非空歌单并保存；
-6. 等待全部新增歌单的基线完成；
-7. 在“同步状态”手动发起一次全量同步，确认逐歌单结果；也可在单个歌单页只同步该歌单。
+6. 等待全部新增歌单的基线完成，确认导航包含待找回、同步状态、歌单歌曲、网易云盘，并有设置入口；
+7. 在“同步状态”手动发起一次全量同步，确认逐歌单及云盘结果；也可在单个歌单页或云盘页只同步该项。云盘普通绑定后在首次同步时建立基线，允许为空。
 
 ## 本地开发
 
@@ -189,16 +197,16 @@ npm run db:migrate:local
 npm run dev
 ```
 
-本地仅在 loopback 地址和 `ALLOW_LOCAL_DEV=true` 时跳过 Access。不要把生产密钥复制到本地。
+本地 loopback 请求在 `ALLOW_LOCAL_DEV` 不为字符串 `false` 时跳过 Access，开发示例显式设为 `true`。生产保持 `false`，不要把生产密钥复制到本地。账号与歌单在页面选择，不需要旧版 UID 或歌单环境变量。
 
 ## 更新与恢复
 
-- 当前初始化直接建立新版结构。必要时保留账号、监控选择、正式会话和 Secret，重建歌曲基线与业务记录；
+- 全新安装按顺序应用 `drizzle` 中全部迁移；已有实例只应用尚未执行的迁移，不修改已发布迁移记录。必要时通过页面重建基线，保留账号、监控选择、正式会话和 Secret；
 - `npm run deploy` 要求已有生产构建；需要从头构建可用 `npm run deploy:full`；
 - `npm run deploy:dry-run` 只验证发布物，不修改线上资源；
 - Secret 只在全新未配置实例自动生成一次；
 - 密钥丢失时不要清空歌曲历史，按 [SECURITY.md](./SECURITY.md#session_encryption_key-丢失或泄露)恢复并重新扫码；
-- 官方按钮创建的用户仓库不会自动获得上游项目更新，低门槛升级仍属于未来开发方向。
+- 官方按钮创建的用户仓库不会自动获得上游项目更新；更新代码时需保留该实例的私有资源配置。
 
 ## 卸载边界
 
@@ -214,9 +222,6 @@ npm run dev
 - 已配置实例缺少 Secret：停止部署并按安全文档恢复，不能自动生成新密钥；
 - 网易二维码或上游请求失败：与 Cloudflare 基础设施部署无关，旧 D1 历史不会被清空。
 
-## 依赖变更
+## 发布产物
 
-- 依赖变更：无；
-- 未新增、升级、替换或删除 npm 依赖；
-- `package-lock.json` 的依赖解析保持不变；
-- 发布物仍是完整 Worker + Static Assets + Workflow，不需要服务器端另行安装依赖。
+生产构建位于 `dist`，包含前端静态资源、服务端 Worker 及生成配置；`.wrangler/deploy/config.json` 指向本次构建。保留配套元数据后可使用 `npm run deploy` 发布该构建。发布形式为完整 Worker、Static Assets、两个 Workflow 和 Cron，不需要服务器端另行安装 npm 依赖。不要把私有构建配置或 Secret 文件提交 Git。

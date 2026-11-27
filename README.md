@@ -3,11 +3,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ZeroEthereal/needle-drop-archive)
 
-“拾针”会持续保存同一网易账号下 1–20 个歌单的账号视角快照，发现歌曲消失或变灰时及时提醒，避免歌曲悄无声息地从收藏中丢失。它不下载、上传或保存音乐文件。
+“拾针”会持续保存同一网易账号下 1–20 个歌单及网易云盘的账号视角快照，记录歌曲消失、变灰和时长错配，并按设置发送邮件提醒。它不下载、上传或保存音乐文件。
 
-Needle Drop Archive is a self-hosted Cloudflare application that monitors up to 20 NetEase Cloud Music playlists under one account. Each user deploys and owns an independent instance and its data.
+Needle Drop Archive is a self-hosted Cloudflare application that monitors up to 20 NetEase Cloud Music playlists and personal cloud storage under one account. Each user deploys and owns an independent instance and its data.
 
-当前版本坚持“一名用户部署一套实例，一个实例绑定一个网易账号”。同一账号可选择 1–20 个可访问的非空歌单，包含自建、私密或收藏的他人歌单。
+当前版本坚持“一名用户部署一套实例，一个实例绑定一个网易账号”。同一账号可选择 1–20 个可访问歌单，包含自建、私密或收藏的他人歌单；新增监控的歌单必须非空。网易云盘随账号自动纳入监控，不占歌单名额。
 
 ## 三种部署方式
 
@@ -19,7 +19,7 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors up to 
 
 按钮部署完成后，还需在 Cloudflare 控制台启用一次 Access，并填写 `ALLOWED_EMAIL`、`ACCESS_TEAM_DOMAIN`、`ACCESS_AUD` 三个变量。保存变量后，如果控制台只创建了新版本而没有自动切换流量，请到 **Deployments / Versions** 将该版本“提升”到 100% 流量。未完成这些步骤时网站保持锁定，不会显示个人数据。
 
-> **注意：** 如果一键部署提示“无法获取存储库内容”或无法继续，通常是因为 Cloudflare 部署页面读取公开 GitHub 仓库时使用了匿名请求，而 VPN、公司网络、学校网络等共享出口已经耗尽 GitHub 匿名访问额度，并不代表项目代码有问题。建议先关闭 VPN 后重试，或者更换 VPN 节点、网络环境后再试；如果仍然无法部署，请改用下面的 **Agent 辅助部署**，让 Agent 自动完成部署和配置。
+> 如果一键部署提示“无法获取存储库内容”，请检查 GitHub 仓库是否可访问、授权状态及网络环境。共享出口的访问额度也可能影响仓库读取。可更换网络重试，或使用下面的 **Agent 辅助部署**。
 
 ### 2. 下载项目后让通用 Agent 辅助部署（Windows）
 
@@ -27,7 +27,7 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors up to 
 
 ### 3. 按文档手动部署
 
-希望完全掌握每一步，或需要排查问题时，请使用 [完整部署与运维指南](./DEPLOYMENT.md)。首版本地自动安装脚本正式支持 Windows；macOS/Linux 用户优先使用官方按钮。
+希望完全掌握每一步，或需要排查问题时，请使用 [完整部署与运维指南](./DEPLOYMENT.md)。本地自动安装脚本支持 Windows；macOS/Linux 用户优先使用官方按钮。
 
 三条路径调用同一套 migration 和部署程序，不维护三套业务实现。重新执行部署会复用已有 D1 和 `SESSION_ENCRYPTION_KEY`，不会因为本地项目被删除或重新下载而清空线上数据。
 
@@ -39,29 +39,32 @@ Needle Drop Archive is a self-hosted Cloudflare application that monitors up to 
 
 ## 工作方式
 
-每次同步先取得完整歌单成员和歌曲详情，再对疑似异常做同一次同步内的技术复核：
+每个歌单或云盘任务读取一份完整快照，校验成员、歌曲资料和当前账号的可播结果后直接对账：
 
-- 疑似 `missing`：重新读取完整成员，两份稳定快照都不存在才确认消失；
-- 疑似 `grey`：只复查相关歌曲，两次都不可播放才确认变灰；
-- 复核失败、成员集合变化或结果不完整：整次同步失败，既有状态不写入也不覆盖；
-- 已确认异常后来恢复可播放：自动回到正常列表；
-- 异常持续存在：保留到用户在页面点击“完成”。
+- `missing`（消失）：已记录的歌曲不在当前完整成员列表中；
+- `grey`（变灰）：歌曲仍在成员列表，但当前账号不可播放；
+- `mismatch`（错配）：歌曲可播放，有效时长与该歌曲 ID 的固定基准不同，最小差异为 1 毫秒；
+- 快照不完整或上游读取失败：该任务失败，不提交歌曲状态；其他任务已成功提交的结果保留；
+- 歌曲重新出现且可播放时，按时长判断正常或错配；时长缺失时保留已有错配；
+- 点击“完成”会删除该歌曲的共享资料及全部歌单、云盘引用；之后再次同步到该 ID 时按新歌曲建立基准。
 
-因此真实异常会在当次完整复核后立即进入异常列表，不等待跨自然日确认。
+异常在当次完整快照对账后生效。
 
-首次打开网站时，用户依次完成“连接网易云 → 扫码登录 → 自动读取全部可访问歌单 → 勾选 1–20 个非空歌单 → 自动建立全部基线”。已配置后可以：
+首次打开网站时，用户依次完成“连接网易云 → 扫码登录 → 读取可访问歌单 → 勾选 1–20 个非空歌单 → 建立所选歌单基线”。云盘监控项随绑定创建，普通绑定不预先读取云盘基线，首次同步时建立。已配置后可以：
 
 - “重新授权”：同一网易 UID 无损替换加密会话；不同 UID 在新账号整组歌单完整验证成功前不会影响当前实例；
 - “管理监控歌单”：先为全部新增项建立基线，全部成功后原子更新选择；取消监控前会列出受影响歌单并要求确认。
-- “从网易云重建基线”：确认后为当前账号全部已选非空歌单获取新快照；整组成功才原子替换旧状态、待找回和旧同步记录，读取失败不动原数据。
+- “从网易云重建基线”：确认后为当前账号本次选择的非空歌单及云盘获取新快照；整组成功才原子替换歌曲状态、待找回和已结束同步记录，读取失败不动原数据。
 
-每天北京时间 03:17 会依次同步全部歌单；“同步状态”的按钮执行同样的全量流程，歌单页按钮只同步当前歌单。待找回按网易歌曲 ID 合并，任一歌单消失则汇总状态为“消失”，否则为“变灰”；歌单标签仍显示各自真实状态。
+每天北京时间 03:17 会按歌单顺序同步，最后同步云盘；“同步状态”的按钮执行同样的全量流程，各歌单和云盘页的按钮只同步当前监控项。待找回按网易歌曲 ID 合并，汇总状态优先级为“消失 → 变灰 → 错配”，来源标签显示各自真实状态。
 
-网易会话会由定时任务加密复用，无需每天扫码。
+页面提供“待找回、同步状态、歌单歌曲、网易云盘”四个主入口，以及独立设置入口。同步历史显示北京时间最近 7 个自然日的已结束批次，每页 10 条；后台创建批次时清理超过 30 天的已结束记录。
+
+设置中的邮件通知默认关闭。配置邮件发送服务后，可按变灰、消失、错配、待找回总数的阈值及自动同步失败启用通知；手动同步不发通知。网易会话会由同步任务加密复用，失效时需要重新授权。
 
 ## 架构与数据安全
 
-- vinext/React 页面由 Workers Static Assets 提供，Hono API 在 Worker 中运行；
+- vinext/React 页面由 Worker 渲染，前端静态资源由 Workers Static Assets 提供，Hono API 在同一 Worker 中运行；
 - D1 保存实例配置、歌曲状态、同步历史及加密后的网易会话；
 - `SESSION_ENCRYPTION_KEY` 只保存在 Worker Secret，与 D1 分离；
 - 一个批次协调 Workflow 顺序派发逐歌单 Workflow，Cron Trigger 每天启动一次全量批次；
@@ -89,7 +92,7 @@ npm run db:migrate:local
 npm run dev
 ```
 
-本地仅在 `ALLOW_LOCAL_DEV=true` 且请求来自 loopback 时跳过 Access；生产公开模板固定为 `false`。
+本地 loopback 请求在 `ALLOW_LOCAL_DEV` 不为字符串 `false` 时跳过 Access；开发示例显式设为 `true`，生产公开模板固定为 `false`。
 
 ## 验证与更新
 
@@ -98,7 +101,7 @@ npm run verify
 npm run deploy:dry-run
 ```
 
-生产部署程序会先构建，再按 `DB` binding 应用全部 D1 migration，最后发布 Worker。migration、Secret 查询或完整性检查失败时都会停止发布。业务数据以网易云为准，开发升级不要求历史数据留档；必要时重建当前基线，详细步骤见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
+`npm run deploy:full` 构建后按 `DB` binding 应用尚未执行的 D1 migration、检查实例和 Secret，再发布 Worker；`npm run deploy` 复用已有构建。migration、Secret 查询或发布物身份检查失败时停止发布。业务数据以网易云为准，开发升级不要求历史数据留档；恢复操作见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
 
 ## 文档
 
@@ -106,10 +109,6 @@ npm run deploy:dry-run
 - [通用 Agent 辅助部署入口](./DEPLOY_WITH_AGENT.md)
 - [项目结构与开发指南](./PROJECT_GUIDE.md)
 - [安全、隐私与漏洞报告](./SECURITY.md)
-- [网易登录与歌单绑定设计](./NETEASE_LOGIN_AND_PLAYLIST_BINDING.md)
-- [多歌单监控的数据、同步与页面规则](./MULTI_PLAYLIST_MONITORING.md)
-- [Workers Observability 与日志说明](./WORKERS_OBSERVABILITY.md)
-- [未来开发方向](./FUTURE_DEVELOPMENT_DIRECTIONS.md)
 
 ## 限制与声明
 
@@ -117,4 +116,4 @@ npm run deploy:dry-run
 
 ## 许可证与依赖
 
-项目采用 [MIT License](./LICENSE)。本次 `v0.1.0` 部署改造没有新增、升级、替换或删除 npm 依赖，`package-lock.json` 的依赖解析保持不变；生产仍发布完整 Worker 与 Static Assets。
+项目采用 [MIT License](./LICENSE)。依赖版本由 `package-lock.json` 锁定，运行、构建和验证依赖均需安装；生产发布完整 Worker、Static Assets、两个 Workflow 和 Cron，无需服务器端安装 npm 依赖。

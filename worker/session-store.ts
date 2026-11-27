@@ -61,51 +61,6 @@ export async function loadNeteaseSession(
   };
 }
 
-export async function storeNeteaseSession(
-  env: Env,
-  session: NeteaseSession,
-  uid: string,
-  options: {
-    id?: string;
-    status?: StoredSessionStatus;
-    validated?: boolean;
-    refreshed?: boolean;
-  } = {},
-): Promise<void> {
-  const encrypted = await encryptSecret(serializeNeteaseSession(session), env);
-  const now = new Date().toISOString();
-  const result = await env.DB.prepare(`
-    INSERT INTO netease_sessions (
-      id, ciphertext, nonce, algorithm, key_version, uid, status,
-      created_at, updated_at, last_validated_at, last_refreshed_at
-    ) VALUES (?, ?, ?, 'AES-256-GCM', ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      ciphertext = excluded.ciphertext,
-      nonce = excluded.nonce,
-      algorithm = excluded.algorithm,
-      key_version = excluded.key_version,
-      uid = excluded.uid,
-      status = excluded.status,
-      updated_at = excluded.updated_at,
-      last_validated_at = COALESCE(excluded.last_validated_at, netease_sessions.last_validated_at),
-      last_refreshed_at = COALESCE(excluded.last_refreshed_at, netease_sessions.last_refreshed_at)
-  `)
-    .bind(
-      validSessionId(options.id ?? "primary"),
-      encrypted.ciphertext,
-      encrypted.nonce,
-      encrypted.keyVersion,
-      uid,
-      options.status ?? "valid",
-      now,
-      now,
-      options.validated ? now : null,
-      options.refreshed ? now : null,
-    )
-    .run();
-  if (!result.success) throw new Error(result.error || "Could not store NetEase session");
-}
-
 export async function storeNeteaseSessionIfBindingCurrent(
   env: Env,
   session: NeteaseSession,
@@ -155,18 +110,6 @@ export async function markNeteaseSessionStatus(
     WHERE id = 'primary'
   `).bind(status, now, validated ? 1 : 0, now).run();
   if (!result.success) throw new Error(result.error || "Could not update NetEase session status");
-}
-
-export async function revokeNeteaseSession(env: Env): Promise<void> {
-  const result = await env.DB.prepare("DELETE FROM netease_sessions WHERE id = 'primary'").run();
-  if (!result.success) throw new Error(result.error || "Could not revoke NetEase session");
-}
-
-export async function deleteNeteaseSession(env: Env, id: string): Promise<void> {
-  const result = await env.DB.prepare("DELETE FROM netease_sessions WHERE id = ?")
-    .bind(validSessionId(id))
-    .run();
-  if (!result.success) throw new Error(result.error || "Could not delete NetEase session");
 }
 
 export async function getNeteaseSessionHealth(env: Env): Promise<{

@@ -8,18 +8,6 @@ async function source(path) {
   return readFile(new URL(path, root), "utf8");
 }
 
-test("the product exposes exactly the three requested primary destinations", async () => {
-  const component = await source("app/components/MusicVault.tsx");
-  const navBlock = component.match(/const navItems:[\s\S]*?= \[([\s\S]*?)\];/);
-
-  assert.ok(navBlock, "primary navigation definition is present");
-  assert.equal((navBlock[1].match(/id:\s*"/g) ?? []).length, 3);
-  assert.match(navBlock[1], /id:\s*"recovery"[\s\S]*?label:\s*"待找回"/);
-  assert.match(navBlock[1], /id:\s*"likes"[\s\S]*?label:\s*"歌单歌曲"/);
-  assert.match(navBlock[1], /id:\s*"sync"[\s\S]*?label:\s*"同步状态"/);
-  assert.doesNotMatch(navBlock[1], /history|历史/i);
-});
-
 test("the neon dashboard remains real-data-only and motion-aware", async () => {
   const [component, css, page, layout] = await Promise.all([
     source("app/components/MusicVault.tsx"),

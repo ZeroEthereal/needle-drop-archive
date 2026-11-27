@@ -40,8 +40,3 @@ export interface Env {
   SESSION_ENCRYPTION_KEY?: string;
 
 }
-
-export interface AppExecutionContext {
-  waitUntil(promise: Promise<unknown>): void;
-  passThroughOnException(): void;
-}

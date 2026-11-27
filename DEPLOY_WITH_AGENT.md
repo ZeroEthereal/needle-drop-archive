@@ -6,12 +6,12 @@ Agent 只负责部署用户自己的 Cloudflare 实例。项目维护者不会�
 
 ## 用户只需要做什么
 
-1. 在 Windows 上安装 Node.js 22.13 或更高版本。
+1. 在 Windows 上安装 Node.js 22.13.0 或更高版本。
 2. 下载或克隆本项目，并用编码 Agent 打开项目根目录。
 3. 把下面整段提示词交给 Agent。
 4. Cloudflare 登录页面出现时，由用户本人登录并授权。
 5. 按 Agent 指引在 Cloudflare 中启用 Access，并填写自己的邮箱。
-6. 部署完成后，用网易云音乐 App 扫码并勾选 1–20 个非空歌单。
+6. 部署完成后，用网易云音乐 App 扫码并勾选 1–20 个非空歌单；云盘自动纳入监控。
 
 ## 可直接复制的提示词
 
@@ -46,11 +46,11 @@ npm ci
 
 - 网站只能由 Access 允许的邮箱进入；
 - 页面可以生成网易云登录二维码；
-- 扫码后可以选择歌单并建立首份基线；
+- 扫码后可以选择歌单并建立首份基线，全量同步包含云盘；
 - D1、Workflow 和每日 Cron 均属于用户自己的 Cloudflare 账户；
 - Workers Observability 已启用，可以在 Cloudflare 控制台查询部署后的 Worker 调用日志；
 - 删除本地项目目录不会影响已经部署的实例。
 
-## 依赖变更
+## 维护边界
 
-本部署方案不新增、升级、替换或删除 npm 依赖。仍使用仓库锁定的完整 Worker + Static Assets 发布形式。
+部署使用仓库锁定的依赖，发布完整 Worker、Static Assets、两个 Workflow 和 Cron。本文是给部署用户复制的提示词；项目级 Agent 开发指令统一维护在根目录 `AGENTS.md`。

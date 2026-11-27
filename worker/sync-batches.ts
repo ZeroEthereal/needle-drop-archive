@@ -108,13 +108,6 @@ export async function latestCompletedBatch(env: Env) {
   return { ...batch, tasks: tasks.results ?? [] };
 }
 
-export async function latestPlaylistTask(env: Env, playlistId: string) {
-  return env.DB.prepare(`SELECT t.* FROM sync_playlist_tasks t
-    JOIN sync_batches b ON b.id = t.batch_id WHERE t.playlist_id = ?
-    ORDER BY datetime(b.created_at) DESC, b.id DESC LIMIT 1`).bind(playlistId)
-    .first<Record<string, unknown>>();
-}
-
 export async function summarizeBatch(env: Env, id: string) {
   const counts = await env.DB.prepare(`SELECT
     SUM(status = 'success') AS success_count,

@@ -1,6 +1,6 @@
 # 安全、隐私与漏洞报告
 
-“拾针”采用“一名用户部署一套 Cloudflare 实例”的模式。每个实例只绑定一个 Cloudflare Access 用户和一个网易云账号，可监控 1–20 个歌单；项目维护者不提供集中服务器，也不会代替部署者持有账号数据。
+“拾针”采用“一名用户部署一套 Cloudflare 实例”的模式。每个实例只绑定一个 Cloudflare Access 用户和一个网易云账号，监控 1–20 个歌单及该账号云盘；项目维护者不提供集中服务器，也不会代替部署者持有账号数据。
 
 ## 数据保存边界
 
@@ -11,13 +11,16 @@
 | 网易 UID、昵称、头像 | D1 `instance_config` | D1 持久化；应用层按普通账号元数据保存 | 否 |
 | 监控歌单 ID、名称、封面和所有者 | D1 `monitored_playlists` | D1 持久化 | 否 |
 | 歌曲、逐歌单状态和同步批次 | D1 `songs`、`playlist_song_states`、`sync_batches`、`sync_playlist_tasks` | D1 持久化，批次保留最近 30 天 | 否 |
-| 二维码 challenge | D1 `netease_auth_flows` | AES-256-GCM 密文，登录完成、取消或过期后清理 | 否 |
+| 二维码 challenge | D1 `netease_auth_flows` | AES-256-GCM 密文；同账号授权、绑定成功、取消或过期流程清理时删除，活动绑定引用期间保留 | 否 |
 | 待确认会话与歌单集合变更进度 | D1 `netease_sessions`、`pending_playlist_sets`、`pending_playlist_baselines` | 会话加密；临时基线仅在全部成功后原子启用 | 否 |
 | Access 允许邮箱、团队域名和 Audience | Cloudflare Worker 变量及本地 `wrangler.private.jsonc` | 私有实例配置 | 否 |
 | D1 UUID | Cloudflare binding 及本地 `wrangler.private.jsonc` | 私有实例标识 | 否 |
 | 未选中的歌单列表 | 登录后的受保护 API 响应 | 只短暂传输，不长期保存 | 否 |
+| 邮件通知规则、触发及批次发送状态 | D1 `settings` | 受保护的设置接口；收件人为实例允许邮箱 | 否 |
 
 D1 中只有网易 Cookie 和二维码 challenge 额外进行应用层加密。UID、昵称、歌单元数据和歌曲集合虽然不是登录凭据，但仍属于个人数据；能够管理该 Cloudflare 账户的人可以查询这些字段。
+
+启用邮件通知后，失败提醒包含未完成监控项名称，异常提醒包含完整待找回歌曲名单和来源，较大名单以附件发送。邮件经配置的 Cloudflare 邮件 binding 发给 `ALLOWED_EMAIL`，不发送网易 Cookie、Access JWT 或加密密钥。邮件服务的投递及保留由部署者自己的账户和邮箱服务管理。
 
 删除本地项目目录不会影响已部署实例：代码在 Worker，业务数据在 D1，密钥在 Worker Secret，Access、Workflow、Cron 和 bindings 在 Cloudflare。删除 Cloudflare 资源则是另一回事，会导致对应线上能力或数据消失。
 
@@ -95,7 +98,7 @@ Cloudflare Access 和网易扫码是两套独立身份：
 - Access 决定谁能进入管理网站；
 - 网易会话决定后台读取哪个音乐账号。
 
-生产实例必须保持 `ALLOW_LOCAL_DEV=false`，Access policy 只允许实例所有者的精确邮箱，并关闭未受同等策略保护的预览入口。Worker API 还会验证 Access JWT 的签名、issuer、Audience 和邮箱，并对写请求校验同源 `Origin` 与 `X-Requested-With`。
+生产实例必须保持 `ALLOW_LOCAL_DEV=false`，Access policy 只允许实例所有者的精确邮箱，并关闭未受同等策略保护的预览入口。Worker API 还会验证 Access JWT 的签名、issuer、Audience 和邮箱，并对写请求校验同源 `Origin` 与 `X-Requested-With`。本地 loopback 请求在 `ALLOW_LOCAL_DEV` 不为字符串 `false` 时跳过 Access，开发配置不得用于公开部署。
 
 ## 上游接口与非隶属声明
 
